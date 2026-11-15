@@ -355,7 +355,7 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
 <div id="device">
 <div id="bezelTop"><span class="plate">GAME GAUNTLET</span><span class="leds"><i class="led" id="ledPwr"></i><i class="led off" id="ledLink"></i></span></div>
 <div id="app">
-  <div id="osbar"><span class="os">NEW ISRAELITE OS <b id="osVer">v1.4</b></span><span class="osmid">KINGDOM OF NEW ISRAEL · NEW GALILEE RELAY</span><span id="linkBadge">LINK: STANDALONE</span></div>
+  <div id="osbar"><span class="os">NEW ISRAELITE OS <b id="osVer">v1.4.1</b></span><span class="osmid">KINGDOM OF NEW ISRAEL · NEW GALILEE RELAY</span><span id="linkBadge">LINK: STANDALONE</span></div>
   <header id="hud">
     <div class="brand"><b>VND</b><small>VAULTS &amp; DEATHCLAWS · WORLD MAP</small><em>NEW ISRAELITE OS · ON GAME GAUNTLET</em></div>
     <div id="clock" class="panel"><span class="lbl">SIMULATION CLOCK</span><div id="clockTime">--</div><div id="clockDate">--</div><div id="clockPhase" class="note"></div></div>
@@ -384,7 +384,7 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
       <div class="panel" id="tabBody" style="justify-content:flex-start;display:block"></div>
     </aside>
   </main>
-  <footer><span class="cr">Made by MickTheDick</span><span id="saveInd">autosave: --</span><span class="dim">VND World Map v1.4 · map: "Lone Star Wastes" · 1 map width = 850 mi</span></footer>
+  <footer><span class="cr">Made by MickTheDick</span><span id="saveInd">autosave: --</span><span class="dim">VND World Map v1.4.1 · map: "Lone Star Wastes" · 1 map width = 850 mi</span></footer>
 </div>
 </div>
 <div id="modalRoot"></div><div id="encRoot"></div><div id="pickRoot"></div><div id="gateRoot"></div>
@@ -403,7 +403,7 @@ const RPG_TRAITS = [{"n": "2077 Vision", "r": "-", "d": "You get Base PER +2, Ba
    VND — Vaults and Deathclaws : World Map & Wasteland Travel Simulator
    Core: constants, data indexes, helpers, RNG, calendar
    ===================================================================== */
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.4.1';
 const SAVE_VERSION = 3;                     // bump when the save schema changes (see migrateSave)
 const MILES_PER_MAP_WIDTH = 850;            // DISTANCE SCALE: full width of the World Map image = 850 miles
                                             // (Texas is ~770-800 mi wide; the image has a margin around the state)
@@ -713,8 +713,10 @@ function partyValue(k) {
 function combatPower() { return rosterNow().reduce((a, m) => a + effSkill(m, 'combat') * (0.55 + 0.45 * Math.min(1, m.hp / 60)), 0); }
 
 /* ---------- vehicle ---------- */
+function vehOwned() { return !!(S.vehicle && S.vehicle.owned); }
 function vehicleUsable() {
   const v = S.vehicle;
+  if (!v.owned) return { ok: false, why: 'The party has no vehicle' };
   if (v.disabled) return { ok: false, why: 'Vehicle is disabled — repair it first' };
   if (v.fuel < 0.5) return { ok: false, why: 'Out of fuel' };
   if (v.cond <= 5) return { ok: false, why: 'Vehicle is wrecked — repair it' };
@@ -846,7 +848,7 @@ function newState(keepSettings) {
     v: SAVE_VERSION, t: 0, rng: (Math.random() * 4294967296) | 0,
     pos: startPos, startSource: PARTY_PIN ? 'The Party pin' : 'Rock City',
     discovered: {}, visited: {}, travel: null, activity: null, weather: null,
-    vehicle: { name: 'Party Vehicle', fuel: 40, cap: 60, cond: 100, disabled: false },
+    vehicle: { name: 'Party Vehicle', fuel: 40, cap: 60, cond: 100, disabled: false, owned: false },   // owned=false: the party has no vehicle until the host grants one (Overseer > VEHICLE)
     mode: 'vehicle',
     party: [], res: { caps: 300, food: 14, water: 36, ammo: 20, stims: 3, parts: 3, chems: 1 },
     statuses: [], heat: {}, log: [], pending: null,
@@ -1132,6 +1134,7 @@ function startTravel(destId, mode) {
   const dest = PIN[destId];
   if (!dest || (!S.discovered[destId] && destId !== '__wp')) return { ok: false, why: 'Undiscovered or unknown destination.' };
   if (S.pending) return { ok: false, why: 'Resolve the current event first.' };
+  if (mode !== 'vehicle') mode = 'walk';
   if (mode === 'vehicle') { const u = vehicleUsable(); if (!u.ok) return { ok: false, why: u.why }; }
   const miles = milesBetween(S.pos, dest);
   if (miles < 0.3) return { ok: false, why: 'You are already there.' };
@@ -2270,9 +2273,10 @@ function applyFx(fx) {
     if (fx[k]) { const before = S.res[k]; S.res[k] = Math.max(0, S.res[k] + fx[k]); const d = S.res[k] - before; if (d) lines.push(`${sgn(d)} ${RES_DEFS[k].label}`); }
   });
   if (fx.loseFrac) for (const k in fx.loseFrac) { const n = Math.floor(S.res[k] * fx.loseFrac[k]); if (n > 0) { S.res[k] -= n; lines.push(`-${n} ${RES_DEFS[k].label} (lost)`); } }
-  if (fx.fuel) { const b = S.vehicle.fuel; S.vehicle.fuel = clamp(b + fx.fuel, 0, S.vehicle.cap); const d = Math.round((S.vehicle.fuel - b) * 10) / 10; if (d) lines.push(`${sgn(d)} Fuel cells`); }
-  if (fx.vcond) { const b = S.vehicle.cond; S.vehicle.cond = clamp(b + fx.vcond, 0, 100); const d = Math.round(S.vehicle.cond - b); if (d) lines.push(`${sgn(d)}% Vehicle condition`); if (S.vehicle.cond <= 0) S.vehicle.disabled = true; }
-  if (fx.disableVehicle) { S.vehicle.disabled = true; lines.push('Vehicle DISABLED (needs repair)'); }
+  const noVeh = !vehOwned();
+  if (fx.fuel && !noVeh) { const b = S.vehicle.fuel; S.vehicle.fuel = clamp(b + fx.fuel, 0, S.vehicle.cap); const d = Math.round((S.vehicle.fuel - b) * 10) / 10; if (d) lines.push(`${sgn(d)} Fuel cells`); }
+  if (fx.vcond && !noVeh) { const b = S.vehicle.cond; S.vehicle.cond = clamp(b + fx.vcond, 0, 100); const d = Math.round(S.vehicle.cond - b); if (d) lines.push(`${sgn(d)}% Vehicle condition`); if (S.vehicle.cond <= 0) S.vehicle.disabled = true; }
+  if (fx.disableVehicle && !noVeh) { S.vehicle.disabled = true; lines.push('Vehicle DISABLED (needs repair)'); }
   const PP = S.pending, exc = (PP && PP.exc) || [], prot = ((PP && PP.protect) || []).map(memberById).filter(m => m && m.hp > 0);
   let absorbed = 0;
   const dmg = (m, a) => {
@@ -2375,6 +2379,7 @@ function itemPrice(tc, k) {
 }
 function sellPrice(tc, k) { return Math.max(1, Math.floor(itemPrice(tc, k) * tc.sell)); }
 function tradeBuy(tc, k, qty) {
+  if (k === 'fuel' && !vehOwned()) return false;
   const p = itemPrice(tc, k);
   qty = k === 'fuel' ? Math.min(qty, Math.floor(S.vehicle.cap - S.vehicle.fuel)) : qty;
   qty = Math.min(qty, Math.floor(S.res.caps / p));
@@ -2384,6 +2389,7 @@ function tradeBuy(tc, k, qty) {
   return qty;
 }
 function tradeSell(tc, k, qty) {
+  if (k === 'fuel' && !vehOwned()) return false;
   const have = k === 'fuel' ? Math.floor(S.vehicle.fuel) : S.res[k];
   qty = Math.min(qty, have); if (qty <= 0) return false;
   S.res.caps += qty * sellPrice(tc, k);
@@ -3801,7 +3807,7 @@ function updateHud(force) {
   setText($('#regionText'), `${cw.region.name} · ${cw.region.terrain}`);
   $$('#speedBtns .btn').forEach(b => b.classList.toggle('on', +b.dataset.i === S.settings.speedIdx));
   const g = $('#btnGM'); setText(g, 'GM: ' + (S.settings.gm ? 'ON' : 'OFF')); g.classList.toggle('on', S.settings.gm);
-  updateLinkBadge(); setText($('#osVer'), 'v' + APP_VERSION.split('.').slice(0, 2).join('.'));
+  updateLinkBadge(); setText($('#osVer'), 'v' + APP_VERSION);
 }
 function fmtHM(x) { const hh = Math.floor(x), m = Math.round((x - hh) * 60); const ap = hh >= 12 ? 'PM' : 'AM'; return (hh % 12 || 12) + ':' + pad2(m) + ap; }
 
@@ -3840,8 +3846,8 @@ function updateStatusStrip() {
   const v = S.vehicle, r = S.res, n = S.party.length;
   const chip = (lbl, val, low) => `<span class="chip${low ? ' low' : ''}">${lbl} <b>${val}</b></span>`;
   const fuelMi = Math.round(v.fuel * FUEL_MI_PER_CELL);
-  let html = chip('FUEL', `${v.fuel.toFixed(1)}/${v.cap} (~${fuelMi} mi)`, v.fuel < 5) +
-    chip('VEHICLE', v.disabled ? 'DISABLED' : Math.round(v.cond) + '%', v.disabled || v.cond < 30) +
+  let html = (v.owned ? chip('FUEL', `${v.fuel.toFixed(1)}/${v.cap} (~${fuelMi} mi)`, v.fuel < 5) +
+    chip('VEHICLE', v.disabled ? 'DISABLED' : Math.round(v.cond) + '%', v.disabled || v.cond < 30) : chip('VEHICLE', 'NO VEHICLE')) +
     chip('FOOD', r.food + ` (${(r.food / Math.max(1, n)).toFixed(1)}d)`, r.food <= n) + chip('WATER', r.water + 'L' + ` (${(r.water / Math.max(1, n) / 2).toFixed(1)}d)`, r.water <= n * 2) +
     chip('AMMO', r.ammo, r.ammo < 5) + chip('CAPS', r.caps) + chip('STIMPAKS', r.stims) + chip('PARTS', r.parts) + chip('STIMULANTS', r.chems);
   S.statuses.forEach(st => { html += `<span class="chip" title="${esc(st.label)}">${esc(st.label)} <b>${fmtDur(st.until - S.t)}</b></span>`; });
@@ -3889,11 +3895,12 @@ function updateActionBar() {
   en('talk', hi.near, hi.near ? 'Ask the locals for rumours (1 hour)' : 'You must be at or near a known location');
   en('trade', hi.near && hi.pin && hi.pin.status !== 'destroyed', hi.near ? 'Buy and sell supplies, refuel' : 'You must be at or near a known location');
   en('shop', trOpenShops().length > 0 || trS().marks.length > 0, trOpenShops().length ? 'Buy, sell, barter and pickpocket' : 'No shop is open here');
-  en('repair', S.res.parts > 0 && (S.vehicle.cond < 100 || S.vehicle.disabled), 'Spend 1 repair part and 2 hours to restore +30% condition');
+  { const rb = $('#actionBar [data-k="repair"]'); if (rb) rb.style.display = vehOwned() ? '' : 'none'; }
+  en('repair', vehOwned() && S.res.parts > 0 && (S.vehicle.cond < 100 || S.vehicle.disabled), 'Spend 1 repair part and 2 hours to restore +30% condition');
 }
 function doTalk() { if (startActivity('talk', { hours: 1, resume: !!S.travel })) toast('Asking around...', 'info'); }
 function doRepair() {
-  if (S.res.parts < 1) return;
+  if (!vehOwned() || S.res.parts < 1) return;
   S.res.parts--; if (startActivity('repair', { hours: 2, resume: !!S.travel })) toast('Repairing the vehicle (-1 part)', 'info'); else S.res.parts++;
 }
 function openTownTrade() {
@@ -3906,9 +3913,9 @@ function openTownTrade() {
 }
 function tradeTable(tc, rerender) {
   const wrap = h('div');
-  wrap.appendChild(h('div', { class: 'row' }, h('span', { class: 'chip' }, 'CAPS ', h('b', { text: S.res.caps })), h('span', { class: 'chip' }, 'FUEL ', h('b', { text: S.vehicle.fuel.toFixed(1) + '/' + S.vehicle.cap }))));
+  wrap.appendChild(h('div', { class: 'row' }, h('span', { class: 'chip' }, 'CAPS ', h('b', { text: S.res.caps })), vehOwned() ? h('span', { class: 'chip' }, 'FUEL ', h('b', { text: S.vehicle.fuel.toFixed(1) + '/' + S.vehicle.cap })) : h('span', { class: 'chip' }, 'NO VEHICLE')));
   const tbl = h('table', { class: 'trade' }, h('tr', {}, ...['ITEM', 'OWNED', 'BUY PRICE', '', 'SELL PRICE', ''].map(x => h('th', { text: x }))));
-  TRADE_ITEMS.forEach(k => {
+  TRADE_ITEMS.filter(k => k !== 'fuel' || vehOwned()).forEach(k => {
     const own = k === 'fuel' ? S.vehicle.fuel.toFixed(1) : S.res[k];
     const lab = k === 'fuel' ? 'Fuel cells' : RES_DEFS[k].label;
     const mk = (fn, q, l) => h('button', { class: 'btn sm', text: l, onclick: () => { const r = fn(tc, k, q); if (!r) toast('Cannot do that', 'warn'); rerender(); markDirty(); } });
@@ -4011,8 +4018,8 @@ function renderTab() {
 function tabSignature() {
   const tr = S.travel;
   switch (ui.tab) {
-    case 'travel': return [S.sug && S.sug.t0, S.settings.freeClick, tr && tr.dest === '__wp' && S.wp && S.wp.x, S.sel, tr && tr.dest, tr && tr.status, S.activity && S.activity.type, !!S.pending, vehicleUsable().ok, Math.round(S.vehicle.fuel), hereInfo().pin && hereInfo().pin.id, curWeather().state, (isRunning() ? 'run' : Math.floor(S.t / 30)), Object.keys(S.discovered).length, S.settings.gm, ui.travelMode, S.party.length].join('|');
-    case 'party': return S.party.map(m => m.id + m.name + (m.hp > 0 ? 1 : 0)).join(',') + '|' + S.bench.map(m => m.id + m.name).join(',') + '|' + JSON.stringify(S.res) + '|' + Math.round(S.vehicle.cond) + S.vehicle.disabled + '|' + S.statuses.length + JSON.stringify(S.assign) + ui.compEdit + MP.role + (S.pending ? 1 : 0);
+    case 'travel': return [S.sug && S.sug.t0, S.settings.freeClick, tr && tr.dest === '__wp' && S.wp && S.wp.x, S.sel, tr && tr.dest, tr && tr.status, S.activity && S.activity.type, !!S.pending, vehicleUsable().ok, vehOwned(), Math.round(S.vehicle.fuel), hereInfo().pin && hereInfo().pin.id, curWeather().state, (isRunning() ? 'run' : Math.floor(S.t / 30)), Object.keys(S.discovered).length, S.settings.gm, ui.travelMode, S.party.length].join('|');
+    case 'party': return S.party.map(m => m.id + m.name + (m.hp > 0 ? 1 : 0)).join(',') + '|' + S.bench.map(m => m.id + m.name).join(',') + '|' + JSON.stringify(S.res) + '|' + Math.round(S.vehicle.cond) + S.vehicle.disabled + S.vehicle.owned + '|' + S.statuses.length + JSON.stringify(S.assign) + ui.compEdit + MP.role + (S.pending ? 1 : 0);
     case 'quests': return JSON.stringify([S.quests, S.qvotes, Object.keys(S.discovered).length, MP.you.pub, MP.role, ui.qEdit]);
     case 'mp': return JSON.stringify([MP.role, MP.status, MP.err, MP.id, MP.info, Object.keys(MP.players).map(k => MP.players[k].name + MP.players[k].online), S.assign, S.party.length]);
     case 'log': return (S.logN || S.log.length) + ui.logFilter;
@@ -4060,7 +4067,7 @@ function renderTravelTab(body) {
         const vu = vehicleUsable();
         if (!ui.travelMode || (ui.travelMode === 'vehicle' && !vu.ok)) ui.travelMode = vu.ok ? S.mode : 'walk';
         if (ui.travelMode === 'vehicle' && !vu.ok) ui.travelMode = 'walk';
-        ['walk', 'vehicle'].forEach(m => {
+        (vehOwned() ? ['walk', 'vehicle'] : ['walk']).forEach(m => {
           const est = estimateTrip(sel, m), dis = m === 'vehicle' && !vu.ok;
           const lines = [`Duration: ${fmtDur(est.minutes)}`, `Arrive: ${fmtETA(est.eta)}`,
             m === 'vehicle' ? `Fuel: ${est.fuel.toFixed(1)} cells (have ${S.vehicle.fuel.toFixed(1)})` : 'Fuel: none', `Food ~${est.food.toFixed(1)}, water ~${est.water.toFixed(1)} L (have ${S.res.food} / ${S.res.water})`];
@@ -4070,6 +4077,7 @@ function renderTravelTab(body) {
             est.short && !dis ? h('div', { class: 's warn', text: `Fuel for only ~${Math.round(est.drivenMiles)} of ${Math.round(est.miles)} mi — you will have to walk the rest.` }) : null);
           body.appendChild(bx);
         });
+        if (!vehOwned()) body.appendChild(h('div', { class: 'note amber', text: 'NO VEHICLE — the party travels on foot.' }));
         body.appendChild(h('div', { class: 'note', text: 'Estimates use current weather and fatigue, a straight-line route, and assume no stops. Encounters, sleep and weather will change the real arrival time.' }));
         const go = isClient()
           ? h('button', { class: 'btn', style: { width: '100%', marginTop: '6px' }, text: 'SUGGEST THIS DESTINATION TO THE HOST', onclick: () => { mpSend({ t: 'suggest', pin: sel.id }); toast('Suggestion sent to the host.', 'info'); } })
@@ -4099,10 +4107,13 @@ function renderPartyTab(body) {
   renderRosterSection(body);
   body.appendChild(h('h3', { text: 'VEHICLE' }));
   const v = S.vehicle;
+  if (!v.owned) body.appendChild(h('div', { class: 'note amber', text: 'NO VEHICLE — the party travels on foot. The Overseer can grant one.' }));
+  else {
   body.appendChild(h('div', { class: 'row' }, isClient() ? h('b', { class: 'amber', text: v.name }) : h('input', { type: 'text', value: v.name, style: { width: '170px' }, onchange: e => { v.name = e.target.value.trim().slice(0, 30) || v.name; markDirty(); } })));
   body.appendChild(h('div', { class: 'kv' }, h('span', { text: 'Fuel' }), h('span', { text: `${v.fuel.toFixed(1)} / ${v.cap} cells (~${Math.round(v.fuel * FUEL_MI_PER_CELL)} mi)` }), h('span', { text: 'Condition' }), h('span', { text: v.disabled ? 'DISABLED — repair needed' : Math.round(v.cond) + '%' }),
     h('span', { text: 'Speed' }), h('span', { text: `${(VEHICLE_MPH * (0.6 + 0.4 * v.cond / 100)).toFixed(0)} mph (walking ${WALK_MPH} mph)` }), h('span', { text: 'Range per cell' }), h('span', { text: FUEL_MI_PER_CELL + ' mi' })));
   if (!isClient()) body.appendChild(h('div', { class: 'row' }, h('button', { class: 'btn sm', text: 'Repair (1 part, 2 h)', disabled: !!S.pending || S.res.parts < 1 || (v.cond >= 100 && !v.disabled), onclick: () => doRepair() })));
+  }
   body.appendChild(h('h3', { text: 'SUPPLIES' }));
   body.appendChild(h('div', { class: 'kv' }, ...Object.keys(RES_DEFS).flatMap(k => [h('span', { text: RES_DEFS[k].label }), h('span', { text: S.res[k] })])));
   body.appendChild(h('div', { class: 'note', text: 'Each person eats 1 ration per day and drinks 2 L per day. Running out saps health and makes fatigue climb faster.' }));
@@ -4262,9 +4273,9 @@ function renderGmTab(body) {
     h('button', { class: 'btn sm', text: 'Fatigue → 95', onclick: () => { S.party.forEach(m => { m.fatigue = 95; }); markDirty(); } }),
     h('button', { class: 'btn sm', text: 'Full HP', onclick: () => { S.party.forEach(m => { m.hp = 100; }); markDirty(); } })));
   body.appendChild(h('div', { class: 'row' },
-    h('button', { class: 'btn sm', text: 'Refuel + repair vehicle', onclick: () => { S.vehicle.fuel = S.vehicle.cap; S.vehicle.cond = 100; S.vehicle.disabled = false; markDirty(); } }),
+    !vehOwned() ? null : h('button', { class: 'btn sm', text: 'Refuel + repair vehicle', onclick: () => { S.vehicle.fuel = S.vehicle.cap; S.vehicle.cond = 100; S.vehicle.disabled = false; markDirty(); } }),
     h('button', { class: 'btn sm', text: '+10 each supply, +100 caps', onclick: () => { ['food', 'water', 'ammo', 'stims', 'parts', 'chems'].forEach(k => { S.res[k] += 10; }); S.res.caps += 100; markDirty(); } }),
-    h('button', { class: 'btn sm', text: 'Empty fuel', onclick: () => { S.vehicle.fuel = 0; markDirty(); } })));
+    !vehOwned() ? null : h('button', { class: 'btn sm', text: 'Empty fuel', onclick: () => { S.vehicle.fuel = 0; markDirty(); } })));
 }
 
 /* =====================================================================
@@ -6900,7 +6911,7 @@ function musCandidates() {
   const jq = (S.quests || []).some(q => !q.done && !q.closed && /jockey/i.test((q.title || q.name || '') + ' ' + (q.text || q.desc || '')));
   if (jq) add('quest_jockey', 'Quest: Jockey');
   const tr = S.travel && S.travel.status === 'moving' && !S.activity ? S.travel : null;
-  if (tr) { add(tr.mode === 'vehicle' ? 'vehicle' : 'foot', 'Travelling'); }
+  if (tr) { add(tr.mode === 'vehicle' && vehOwned() ? 'vehicle' : 'foot', 'Travelling'); }
   if (S.mapView === WORLD_MAP_ID) add('wasteland', 'Open wasteland');
   add('wasteland', 'Ambient');
   return c;
@@ -7396,6 +7407,40 @@ function scenesHere() { const hi = typeof hereInfo === 'function' ? hereInfo() :
 function scnInstallUi() { const mb = $('#menuBtns'); if (mb && !$('#btnScenes')) mb.insertBefore(h('button', { class: 'btn sm', id: 'btnScenes', title: 'Local grid scenes (host builds maps, places NPCs; players move freely)', onclick: () => { if (isClient()) { const sc = sceneActive(); if (sc) { ui.scene.hidden = false; sceneSync(true); } else toast('No scene is active.', 'info'); } else { ui.ov.sub = 'scenes'; setTab('ov'); } }, text: '▣ SCENES' }), mb.firstChild); }
 window.addEventListener('DOMContentLoaded', () => setTimeout(scnInstallUi, 0)); if (document.readyState !== 'loading') setTimeout(scnInstallUi, 0);
 setInterval(() => { try { sceneSync(); } catch (e) { } }, 200);
+
+/* v1.4.1 — Vehicle ownership. S.vehicle.owned (default false, also for migrated saves): until the host grants a vehicle
+   the party travels on foot; the VEHICLE travel option, fuel chip, Repair Vehicle, fuel trades and vehicle events are off
+   and the music never picks "World Map In Vehicle". The Overseer grants / removes it (state syncs with the whole of S). */
+const VEH_GRANT_DEF = { fuel: 40, cond: 100 };      // GAP default starting fuel / condition for a granted vehicle (editable in the form)
+function vehRefreshUi() { try { updateStatusStrip(); updateActionBar(); updateTravelBar(); } catch (e) { } if (typeof updateHud === 'function') updateHud(); ui.tabSig = ''; renderTab(); }
+function vehGrant(name, fuel, cond) {
+  const v = S.vehicle; v.name = String(name || '').trim().slice(0, 30) || v.name || 'Party Vehicle';
+  v.cap = Math.max(1, +v.cap || 60); v.fuel = clamp(+fuel || 0, 0, v.cap); v.cond = clamp(+cond || 0, 1, 100); v.disabled = false; v.owned = true;
+  S.mode = 'vehicle'; ui.travelMode = null;
+  ovAudit(`Vehicle GRANTED: ${v.name} (fuel ${v.fuel}/${v.cap}, condition ${Math.round(v.cond)}%)`); addLog('system', `The party now has a vehicle: ${v.name}.`);
+  markDirty(); mpSyncSoon(); vehRefreshUi(); return { ok: true };
+}
+function vehRemove() {
+  const v = S.vehicle; if (!v.owned) return { ok: false };
+  v.owned = false; if (S.travel && S.travel.mode === 'vehicle') S.travel.mode = 'walk';
+  S.mode = 'walk'; ui.travelMode = 'walk';
+  ovAudit(`Vehicle REMOVED: ${v.name}`); addLog('system', 'The party no longer has a vehicle.');
+  markDirty(); mpSyncSoon(); vehRefreshUi(); return { ok: true };
+}
+function vehOvTab(body) {
+  const v = S.vehicle, f = ui.vehForm = ui.vehForm || {};
+  if (f.name == null) f.name = v.name; if (f.fuel == null) f.fuel = VEH_GRANT_DEF.fuel; if (f.cond == null) f.cond = VEH_GRANT_DEF.cond;
+  body.appendChild(h('div', { class: 'note dim', text: 'The party has no vehicle until you grant one. While there is none, the VEHICLE travel option, the fuel chip, Repair Vehicle, fuel trading and vehicle breakdown events are switched off, the HUD says NO VEHICLE and the "World Map In Vehicle" track is never picked. Granting or removing syncs to every player and is saved with the game.' }));
+  body.appendChild(h('div', { class: 'ov-row' }, h('b', { class: v.owned ? 'ok' : 'amber', text: v.owned ? `OWNED: ${v.name} — fuel ${v.fuel.toFixed(1)}/${v.cap}, condition ${v.disabled ? 'DISABLED' : Math.round(v.cond) + '%'}` : 'NO VEHICLE' })));
+  body.appendChild(h('h3', { text: v.owned ? 'UPDATE / RE-GRANT' : 'GRANT A VEHICLE' }));
+  body.appendChild(h('div', { class: 'ov-row' }, h('span', { style: { width: '110px' }, text: 'Name' }), h('input', { class: 'ov-in', id: 'vehName', value: f.name, style: { width: '220px' }, onchange: e => { f.name = e.target.value; } })));
+  body.appendChild(h('div', { class: 'ov-row' }, h('span', { style: { width: '110px' }, text: `Starting fuel (0-${v.cap})` }), h('input', { class: 'ov-in', id: 'vehFuel', type: 'number', value: f.fuel, style: { width: '80px' }, onchange: e => { f.fuel = +e.target.value; } })));
+  body.appendChild(h('div', { class: 'ov-row' }, h('span', { style: { width: '110px' }, text: 'Condition % (1-100)' }), h('input', { class: 'ov-in', id: 'vehCond', type: 'number', value: f.cond, style: { width: '80px' }, onchange: e => { f.cond = +e.target.value; } })));
+  body.appendChild(h('div', { class: 'ov-btns' },
+    ovBtn(v.owned ? 'UPDATE VEHICLE' : 'GRANT VEHICLE', () => { const g = id => { const e = document.getElementById(id); return e ? e.value : null; }; f.name = g('vehName') || f.name; f.fuel = +g('vehFuel'); f.cond = +g('vehCond'); vehGrant(f.name, f.fuel, f.cond); toast('Vehicle granted: ' + S.vehicle.name, 'ok'); ovRefresh(); }, 'grn'),
+    v.owned ? ovBtn('REMOVE VEHICLE', () => openModal({ title: 'REMOVE VEHICLE?', body: h('div', { text: `The party loses "${v.name}" and travels on foot. Fuel and condition are kept in case you grant it again.` }), buttons: [{ label: 'REMOVE', cls: 'btn red', onclick: () => { vehRemove(); closeModal(); ovRefresh(); } }, { label: 'Cancel', cls: 'btn', onclick: () => closeModal() }] }), 'red') : null));
+}
+OV_EXTRA.push(['vehicle', 'VEHICLE', vehOvTab]);
 
 /* =====================================================================
    UI: tactical battlefield (canvas grid, turn order, actions, combat log)
