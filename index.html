@@ -4302,9 +4302,24 @@ function pendingSig() {
           JSON.stringify(S.assign), S.party.map(m => m.hp > 0 ? 1 : 0).join(''), MP.you.pub, MP.status, P.trade ? 1 : 0, P.fight ? 1 : 0, P.tac ? P.tac.rev : 0].join('|');
 }
 function syncPendingUi() {
-  const on = $('#encRoot').classList.contains('on');
-  if (!S.pending) { if (on) showPending(); return; }
-  if (!on || pendingSig() !== ui.pendSig) showPending();
+  const P = S.pending;
+  const encRootEl = $('#encRoot');
+  const tacRootEl = $('#tacRoot');
+  const encOn = !!(encRootEl && encRootEl.classList.contains('on'));
+  const tacOn = !!(tacRootEl && tacRootEl.classList.contains('on'));
+
+  // Tactical combat intentionally hides the encounter dialog. Do not use
+  // the hidden encounter dialog as the "UI is missing" signal here, or the
+  // animation frame loop will rebuild the entire combat DOM every frame.
+  if (!P) {
+    if (encOn || tacOn) showPending();
+    return;
+  }
+  if (P.stage === 'tacfight') {
+    if (!tacOn || pendingSig() !== ui.pendSig) showPending();
+    return;
+  }
+  if (!encOn || pendingSig() !== ui.pendSig) showPending();
 }
 function encSelection(P) {
   const key = P.t0 + ':' + P.key;
