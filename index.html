@@ -351,6 +351,24 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
 #sceneRoot .tac{box-shadow:0 0 40px rgba(88,184,255,.25)}
 .tc-card.on{border-color:var(--a)}
 
+
+/* VND campaign opening crawl */
+#vndIntroRoot{position:fixed;inset:0;z-index:20000;background:#000;color:#f9d66b;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:Georgia,'Times New Roman',serif}
+#vndIntroRoot .intro-start{position:absolute;z-index:4;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(ellipse at center,#111 0,#000 68%);text-align:center;padding:24px}
+#vndIntroRoot .intro-start h2{font: bold 22px/1.4 Georgia,serif;letter-spacing:5px;color:#f9d66b}
+#vndIntroRoot .intro-start p{font:14px/1.6 'Courier New',monospace;color:#c9b77d;max-width:520px}
+#vndIntroRoot .intro-start button{font: bold 14px 'Courier New',monospace;letter-spacing:2px;padding:13px 24px;border:1px solid #c69b3b;color:#f9d66b;background:#171109;cursor:pointer}
+#vndIntroRoot .intro-space{position:absolute;inset:0;overflow:hidden;perspective:430px;perspective-origin:50% 100%;}
+#vndIntroRoot .intro-crawl{position:absolute;left:50%;top:0;width:min(82vw,920px);margin:0;transform:translateX(-50%);transform-origin:50% 100%;color:#f6cf56;font-size:clamp(18px,2.05vw,30px);font-weight:700;line-height:1.55;letter-spacing:.4px;text-align:justify;text-shadow:0 0 2px rgba(255,196,56,.25);opacity:0}
+#vndIntroRoot.playing .intro-crawl{opacity:1;animation:vndPerspectiveCrawl var(--crawl-duration,90s) linear forwards}
+#vndIntroRoot .crawl-kicker{text-align:center;font-size:1.05em;line-height:1.65;margin-bottom:2.2em}
+#vndIntroRoot .crawl-episode{text-align:center;font-size:1.2em;letter-spacing:5px;margin:1.4em 0 .25em}
+#vndIntroRoot .crawl-title{text-align:center;font-size:1.5em;letter-spacing:5px;margin:0 0 2.2em}
+#vndIntroRoot .crawl-end{text-align:center;margin-top:2.4em}
+#vndIntroRoot .crawl-vignette{position:absolute;inset:0;pointer-events:none;background:linear-gradient(#000 0%,transparent 17%,transparent 76%,#000 100%);z-index:2}
+@keyframes vndPerspectiveCrawl{0%{transform:translateX(-50%) translateY(82vh) rotateX(19deg) translateZ(0);opacity:1}100%{transform:translateX(-50%) translateY(-175%) rotateX(23deg) translateZ(-650px);opacity:.18}}
+@media(max-width:600px){#vndIntroRoot .intro-crawl{width:88vw;font-size:17px;line-height:1.45}#vndIntroRoot .intro-start h2{font-size:17px;letter-spacing:3px}}
+
 </style>
 </head>
 <body>
@@ -847,7 +865,7 @@ function newState(keepSettings) {
   const old = S && keepSettings ? S.settings : null;
   const startPos = PARTY_PIN && PARTY_PIN.x != null ? { x: PARTY_PIN.x, y: PARTY_PIN.y } : (() => { const r = findPin('rock city'); return { x: r.x, y: r.y }; })();
   S = {
-    v: SAVE_VERSION, t: 0, rng: (Math.random() * 4294967296) | 0,
+    v: SAVE_VERSION, t: 0, rng: (Math.random() * 4294967296) | 0, campaignId: 'camp_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
     pos: startPos, startSource: PARTY_PIN ? 'The Party pin' : 'Rock City',
     discovered: {}, visited: {}, travel: null, activity: null, weather: null,
     vehicle: { name: 'Party Vehicle', fuel: 40, cap: 60, cond: 100, disabled: false, owned: false },   // owned=false: the party has no vehicle until the host grants one (Overseer > VEHICLE)
@@ -3408,7 +3426,7 @@ function clientOnMsg(msg) {
     ns.settings.gm = false; ns.settings.showUndiscovered = false; ns.settings.showHidden = false;
     S = ns; MP.you = msg.you; MP.info = msg.mp;
     const first = !MP.got; MP.got = true; MP.status = 'live'; MP.retry = 0; clearTimeout(MP._to);
-    if (first) { afterStateReplaced(); centerOn(S.pos.x, S.pos.y, 1.5); showJoinGate(false); }
+    if (first) { afterStateReplaced(); centerOn(S.pos.x, S.pos.y, 1.5); showJoinGate(false); if (window.__vndReady && typeof maybeShowCampaignIntro === 'function') setTimeout(() => maybeShowCampaignIntro('first-join'), 350); }
     ui.dirty = false; ui.netNew = true;
     mpRefresh(true);
   }
@@ -3468,6 +3486,7 @@ function makeSnapshot(name) {
 function migrateSave(snap) {
   const st = snap.state;
   const ver = snap.version || 1;
+  if (!st.campaignId) st.campaignId = 'legacy_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   if (ver > SAVE_VERSION) throw new Error('This save was made by a newer version (format v' + ver + ').');
   // ---- v1 -> v2: player characters, companions (bench), player assignments, quests, quest votes ----
   if (ver < 2) {
@@ -3512,6 +3531,7 @@ function applySnapshot(snap) {
   if (S.pending && S.pending.stage === 'choose' && !S.pending.view) refreshPendingView();
   if (typeof afterStateReplaced === 'function') afterStateReplaced();
   if (typeof mpAfterHostReplace === 'function') mpAfterHostReplace();
+  if (window.__vndReady && typeof maybeShowCampaignIntro === 'function') setTimeout(() => maybeShowCampaignIntro('save-load'), 250);
 }
 function autosave() {
   if (!S || isClient()) return;
@@ -7795,6 +7815,75 @@ function renderTacHost(side, T) {
 }
 
 /* =====================================================================
+   CAMPAIGN INTRO — first new game / first join per player and campaign
+   Uses the canonical Episode II crawl from the Gauntlet specification.
+   The viewed marker is local to each player and campaign; save loads do
+   not replay it once that player has completed it.
+   ===================================================================== */
+const VND_CANONICAL_CRAWL = `A long time ago\nin a wasteland not so far away….\n\nEPISODE II\nBLOOD AND SOIL\n\nThe party stands in the shadowed streets of Rock City, the last place any of them expected to find temporary safety.\n\nRob Hall has earned the trust of Mayor Andre Patterson — but only by putting a bullet through the head of an innocent child on the mayor’s orders. The blood is still warm on his hands. Beside him walk Rodney, Eric Mason, and the boy called El Runto. Danny Diesel is gone, having abandoned the group in silent disgust. Nicodemus has been cast out, returning to New Galilee with nothing but hatred for what Rob has become.\n\nThey are currently working for the Overlords, investigating the silent towns of Marcos and Rock City. This is the task that holds them here under Patterson’s watchful eye. Yet their original mission remains unfinished. New Israel sent them into Texas to seize Reunion Tower in the ruins of Dallas and claim the Multi Computational Matrix. The Matrix holds nothing more than an AI brain copy of Baron Skunk, the oil tycoon.\n\nThe Cartel watches. The Cult of Vulcan burns. Patterson’s favor is a leash that can tighten at any moment. And the Matrix still waits inside the Tower.\n\nThey have nowhere left to run. They have already crossed every line. Now they serve the Overlords while the true prize remains out of reach.\n\nThe journey continues.`;
+function introPlayerKey() {
+  if (isClient()) return String((MP.you && MP.you.pub) || MP.joinName || lsGet('vnd.mp.name') || 'guest').replace(/[^a-z0-9_-]/gi, '_');
+  return 'host';
+}
+function introSeenKey() { return 'vnd.intro.seen.' + String(S && S.campaignId || 'unknown') + '.' + introPlayerKey(); }
+function maybeShowCampaignIntro(reason) {
+  if (!S || !S.campaignId || document.getElementById('vndIntroRoot')) return false;
+  const key = introSeenKey(); if (lsGet(key) === '1') return false;
+  showCampaignIntro(key, reason || 'new-game'); return true;
+}
+function showCampaignIntro(seenKey, reason) {
+  const root = document.createElement('div'); root.id = 'vndIntroRoot';
+  const start = document.createElement('div'); start.className = 'intro-start';
+  const heading = document.createElement('h2'); heading.textContent = 'A LONG TIME AGO…';
+  const desc = document.createElement('p'); desc.textContent = 'A campaign transmission is incoming. The opening narration and soundtrack will begin together.';
+  const begin = document.createElement('button'); begin.type = 'button'; begin.textContent = 'BEGIN TRANSMISSION';
+  start.append(heading, desc, begin);
+  const space = document.createElement('div'); space.className = 'intro-space';
+  const crawl = document.createElement('div'); crawl.className = 'intro-crawl';
+  const parts = VND_CANONICAL_CRAWL.split('\n');
+  parts.forEach((line, i) => {
+    const p = document.createElement('p');
+    if (i === 0 || i === 1) p.className = 'crawl-kicker';
+    else if (line === 'EPISODE II') p.className = 'crawl-episode';
+    else if (line === 'BLOOD AND SOIL') p.className = 'crawl-title';
+    else if (line === 'The journey continues.') p.className = 'crawl-end';
+    p.textContent = line || '\u00a0'; crawl.appendChild(p);
+  });
+  const vignette = document.createElement('div'); vignette.className = 'crawl-vignette';
+  space.append(crawl, vignette); root.append(start, space); document.body.appendChild(root);
+  let audio = null, started = false, finished = false, audioSources = [], audioSourceIndex = 0;
+  const complete = () => {
+    if (finished) return; finished = true;
+    try { if (audio) { audio.pause(); audio.currentTime = 0; } } catch (e) {}
+    try { if (typeof MUS !== 'undefined') { MUS.els.forEach(e => { try { e.pause(); } catch (x) {} }); musTick(true); } } catch (e) {}
+    lsSet(seenKey, '1'); root.remove();
+    if (!isClient()) { addLog('system', 'Campaign opening crawl completed for ' + introPlayerKey() + '.'); markDirty(); autosave(); }
+  };
+  const setDuration = () => {
+    if (audio && Number.isFinite(audio.duration) && audio.duration > 20) crawl.style.setProperty('--crawl-duration', Math.max(45, audio.duration) + 's');
+  };
+  const startAudio = () => {
+    if (started) return; started = true;
+    try { if (typeof MUS !== 'undefined') MUS.els.forEach(e => { try { e.pause(); } catch (x) {} }); } catch (e) {}
+    audioSources = ['music/The%20war%20never%20changes.mp3', MUS_ABS + 'The%20war%20never%20changes.mp3', 'music/war-war-never-changes.mp3', MUS_ABS + 'war-war-never-changes.mp3'];
+    audio = new Audio(); audio.preload = 'auto'; audio.volume = MUS.mute ? 0 : MUS.vol;
+    audio.addEventListener('loadedmetadata', setDuration);
+    audio.addEventListener('error', () => {
+      if (audioSourceIndex < audioSources.length - 1) { audioSourceIndex++; audio.src = audioSources[audioSourceIndex]; audio.load(); audio.play().catch(() => {}); }
+      else { addLog('warn', 'Campaign intro audio missing: The war never changes.mp3. The crawl will continue silently.'); }
+    });
+    audio.addEventListener('ended', () => { complete(); });
+    audio.src = audioSources[0]; audio.play().catch(() => { addLog('warn', 'Campaign intro audio could not autoplay; crawl continues silently.'); });
+    root.classList.add('playing'); start.style.display = 'none';
+    // If the audio asset is missing or has no duration metadata, retain a readable crawl.
+    setTimeout(() => { if (!finished && (!audio || audio.error)) complete(); }, 125000);
+  };
+  crawl.addEventListener('animationend', () => { if (!audio || audio.error || audio.paused) complete(); });
+  begin.addEventListener('click', startAudio);
+  if (!isClient()) { addLog('system', 'Campaign opening crawl started (' + (reason || 'new game') + ').'); }
+}
+
+/* =====================================================================
    Main: boot, game loop, new game, import hooks
    ===================================================================== */
 let lastTs = 0, fastAccum = 0, lastUiSlow = 0;
@@ -7813,7 +7902,7 @@ function doNewGame() {
   newState(true);
   afterStateReplaced();
   centerOn(S.pos.x, S.pos.y);
-  autosave(); toast('New game started — Tuesday, December 23, 2296', 'info');
+  autosave(); toast('New game started — Tuesday, December 23, 2296', 'info'); setTimeout(() => maybeShowCampaignIntro('new-game'), 180);
 }
 function frame(ts) {
   const dtReal = Math.min(0.25, (ts - lastTs) / 1000 || 0.016); lastTs = ts;
@@ -7891,7 +7980,7 @@ function boot() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.modalOpen) closeModal(); });
   window.addEventListener('error', e => { window.__vndErr = (window.__vndErr || []).concat(String(e.message)); });
   requestAnimationFrame(t => { lastTs = t; requestAnimationFrame(frame); });
-  bootScreen(() => {});
+  bootScreen(() => { window.__vndReady = true; if (!jn) setTimeout(() => maybeShowCampaignIntro(restored ? 'save-load' : 'first-new-game'), 180); });
 }
 window.VND = {
   get S() { return S; }, simTick, startTravel, startActivity, triggerEncounter, triggerEvent, chooseOption, closePending, applySnapshot, makeSnapshot, saveSlot, loadSlot, getSlots,
