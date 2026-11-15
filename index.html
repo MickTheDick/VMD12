@@ -352,22 +352,13 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
 .tc-card.on{border-color:var(--a)}
 
 
-/* VND campaign opening crawl */
-#vndIntroRoot{position:fixed;inset:0;z-index:20000;background:#000;color:#f9d66b;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:Georgia,'Times New Roman',serif}
-#vndIntroRoot .intro-start{position:absolute;z-index:4;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(ellipse at center,#111 0,#000 68%);text-align:center;padding:24px}
-#vndIntroRoot .intro-start h2{font: bold 22px/1.4 Georgia,serif;letter-spacing:5px;color:#f9d66b}
-#vndIntroRoot .intro-start p{font:14px/1.6 'Courier New',monospace;color:#c9b77d;max-width:520px}
-#vndIntroRoot .intro-start button{font: bold 14px 'Courier New',monospace;letter-spacing:2px;padding:13px 24px;border:1px solid #c69b3b;color:#f9d66b;background:#171109;cursor:pointer}
-#vndIntroRoot .intro-space{position:absolute;inset:0;overflow:hidden;perspective:430px;perspective-origin:50% 100%;}
-#vndIntroRoot .intro-crawl{position:absolute;left:50%;top:0;width:min(82vw,920px);margin:0;transform:translateX(-50%);transform-origin:50% 100%;color:#f6cf56;font-size:clamp(18px,2.05vw,30px);font-weight:700;line-height:1.55;letter-spacing:.4px;text-align:justify;text-shadow:0 0 2px rgba(255,196,56,.25);opacity:0}
-#vndIntroRoot.playing .intro-crawl{opacity:1;animation:vndPerspectiveCrawl var(--crawl-duration,90s) linear forwards}
-#vndIntroRoot .crawl-kicker{text-align:center;font-size:1.05em;line-height:1.65;margin-bottom:2.2em}
-#vndIntroRoot .crawl-episode{text-align:center;font-size:1.2em;letter-spacing:5px;margin:1.4em 0 .25em}
-#vndIntroRoot .crawl-title{text-align:center;font-size:1.5em;letter-spacing:5px;margin:0 0 2.2em}
-#vndIntroRoot .crawl-end{text-align:center;margin-top:2.4em}
-#vndIntroRoot .crawl-vignette{position:absolute;inset:0;pointer-events:none;background:linear-gradient(#000 0%,transparent 17%,transparent 76%,#000 100%);z-index:2}
-@keyframes vndPerspectiveCrawl{0%{transform:translateX(-50%) translateY(82vh) rotateX(19deg) translateZ(0);opacity:1}100%{transform:translateX(-50%) translateY(-175%) rotateX(23deg) translateZ(-650px);opacity:.18}}
-@media(max-width:600px){#vndIntroRoot .intro-crawl{width:88vw;font-size:17px;line-height:1.45}#vndIntroRoot .intro-start h2{font-size:17px;letter-spacing:3px}}
+/* VND campaign introduction: static yellow text on black */
+#vndIntroRoot{position:fixed;inset:0;z-index:20000;background:#000;color:#f9d66b;display:flex;align-items:stretch;justify-content:center;overflow:hidden;font-family:"Courier New",Courier,monospace}
+#vndIntroRoot .intro-space{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;background:#000;padding:7vh 6vw 9vh}
+#vndIntroRoot .intro-crawl{position:relative;width:min(900px,100%);margin:0 auto;color:#f9d66b;font-family:"Courier New",Courier,monospace;font-size:clamp(15px,1.55vw,21px);font-weight:600;line-height:1.65;letter-spacing:.25px;text-align:left;text-shadow:none;opacity:1;transform:none;animation:none}
+#vndIntroRoot .intro-crawl p{margin:0 0 1.15em}
+#vndIntroRoot .intro-skip{position:sticky;top:0;z-index:3;margin:0 auto 22px;width:max-content;max-width:100%;padding:7px 12px;border:1px solid #9d823b;background:#000;color:#f9d66b;font:12px "Courier New",monospace;letter-spacing:1px;text-align:center}
+@media(max-width:600px){#vndIntroRoot .intro-space{padding:5vh 6vw 8vh}#vndIntroRoot .intro-crawl{font-size:15px;line-height:1.55}}
 
 </style>
 </head>
@@ -3531,7 +3522,7 @@ function applySnapshot(snap) {
   if (S.pending && S.pending.stage === 'choose' && !S.pending.view) refreshPendingView();
   if (typeof afterStateReplaced === 'function') afterStateReplaced();
   if (typeof mpAfterHostReplace === 'function') mpAfterHostReplace();
-  if (window.__vndReady && typeof maybeShowCampaignIntro === 'function') setTimeout(() => maybeShowCampaignIntro('save-load'), 250);
+  // Loading or continuing a save does not replay the campaign introduction.
 }
 function autosave() {
   if (!S || isClient()) return;
@@ -7820,7 +7811,17 @@ function renderTacHost(side, T) {
    The viewed marker is local to each player and campaign; save loads do
    not replay it once that player has completed it.
    ===================================================================== */
-const VND_CANONICAL_CRAWL = `A long time ago\nin a wasteland not so far away….\n\nEPISODE II\nBLOOD AND SOIL\n\nThe party stands in the shadowed streets of Rock City, the last place any of them expected to find temporary safety.\n\nRob Hall has earned the trust of Mayor Andre Patterson — but only by putting a bullet through the head of an innocent child on the mayor’s orders. The blood is still warm on his hands. Beside him walk Rodney, Eric Mason, and the boy called El Runto. Danny Diesel is gone, having abandoned the group in silent disgust. Nicodemus has been cast out, returning to New Galilee with nothing but hatred for what Rob has become.\n\nThey are currently working for the Overlords, investigating the silent towns of Marcos and Rock City. This is the task that holds them here under Patterson’s watchful eye. Yet their original mission remains unfinished. New Israel sent them into Texas to seize Reunion Tower in the ruins of Dallas and claim the Multi Computational Matrix. The Matrix holds nothing more than an AI brain copy of Baron Skunk, the oil tycoon.\n\nThe Cartel watches. The Cult of Vulcan burns. Patterson’s favor is a leash that can tighten at any moment. And the Matrix still waits inside the Tower.\n\nThey have nowhere left to run. They have already crossed every line. Now they serve the Overlords while the true prize remains out of reach.\n\nThe journey continues.`;
+const VND_CANONICAL_CRAWL = `The party stands in the shadowed streets of Rock City, the last place any of them expected to find temporary safety.
+
+Rob Hall has earned the trust of Mayor Andre Patterson — but only by putting a bullet through the head of an innocent child on the mayor’s orders. The blood is still warm on his hands. Beside him walk Rodney, Eric Mason, and the boy called El Runto. Danny Diesel is gone, having abandoned the group in silent disgust. Nicodemus has been cast out, returning to New Galilee with nothing but hatred for what Rob has become.
+
+They are currently working for the Overlords, investigating the silent towns of Marcos and Rock City. This is the task that holds them here under Patterson’s watchful eye. Yet their original mission remains unfinished. New Israel sent them into Texas to seize Reunion Tower in the ruins of Dallas and claim the Multi Computational Matrix. The Matrix holds nothing more than an AI brain copy of Baron Skunk, the oil tycoon.
+
+The Cartel watches. The Cult of Vulcan burns. Patterson’s favor is a leash that can tighten at any moment. And the Matrix still waits inside the Tower.
+
+They have nowhere left to run. They have already crossed every line. Now they serve the Overlords while the true prize remains out of reach.
+
+The journey continues.`;
 function introPlayerKey() {
   if (isClient()) return String((MP.you && MP.you.pub) || MP.joinName || lsGet('vnd.mp.name') || 'guest').replace(/[^a-z0-9_-]/gi, '_');
   return 'host';
@@ -7833,54 +7834,71 @@ function maybeShowCampaignIntro(reason) {
 }
 function showCampaignIntro(seenKey, reason) {
   const root = document.createElement('div'); root.id = 'vndIntroRoot';
-  const start = document.createElement('div'); start.className = 'intro-start';
-  const heading = document.createElement('h2'); heading.textContent = 'A LONG TIME AGO…';
-  const desc = document.createElement('p'); desc.textContent = 'A campaign transmission is incoming. The opening narration and soundtrack will begin together.';
-  const begin = document.createElement('button'); begin.type = 'button'; begin.textContent = 'BEGIN TRANSMISSION';
-  start.append(heading, desc, begin);
   const space = document.createElement('div'); space.className = 'intro-space';
+  const skip = document.createElement('div'); skip.className = 'intro-skip';
+  skip.textContent = 'HOLD ANY KEY TO SKIP';
   const crawl = document.createElement('div'); crawl.className = 'intro-crawl';
-  const parts = VND_CANONICAL_CRAWL.split('\n');
-  parts.forEach((line, i) => {
+  VND_CANONICAL_CRAWL.split('\n').forEach(line => {
     const p = document.createElement('p');
-    if (i === 0 || i === 1) p.className = 'crawl-kicker';
-    else if (line === 'EPISODE II') p.className = 'crawl-episode';
-    else if (line === 'BLOOD AND SOIL') p.className = 'crawl-title';
-    else if (line === 'The journey continues.') p.className = 'crawl-end';
-    p.textContent = line || '\u00a0'; crawl.appendChild(p);
+    p.textContent = line || '\u00a0';
+    crawl.appendChild(p);
   });
-  const vignette = document.createElement('div'); vignette.className = 'crawl-vignette';
-  space.append(crawl, vignette); root.append(start, space); document.body.appendChild(root);
-  let audio = null, started = false, finished = false, audioSources = [], audioSourceIndex = 0;
+  space.append(skip, crawl); root.appendChild(space); document.body.appendChild(root);
+
+  let audio = null, finished = false, audioSources = [], audioSourceIndex = 0;
   const complete = () => {
-    if (finished) return; finished = true;
+    if (finished) return;
+    finished = true;
     try { if (audio) { audio.pause(); audio.currentTime = 0; } } catch (e) {}
     try { if (typeof MUS !== 'undefined') { MUS.els.forEach(e => { try { e.pause(); } catch (x) {} }); musTick(true); } } catch (e) {}
-    lsSet(seenKey, '1'); root.remove();
-    if (!isClient()) { addLog('system', 'Campaign opening crawl completed for ' + introPlayerKey() + '.'); markDirty(); autosave(); }
+    document.removeEventListener('keydown', skipOnKey, true);
+    lsSet(seenKey, '1');
+    root.remove();
+    if (!isClient()) {
+      addLog('system', 'Campaign introduction completed for ' + introPlayerKey() + '.');
+      markDirty(); autosave();
+    }
   };
-  const setDuration = () => {
-    if (audio && Number.isFinite(audio.duration) && audio.duration > 20) crawl.style.setProperty('--crawl-duration', Math.max(45, audio.duration) + 's');
+  const skipOnKey = e => {
+    if (!root.isConnected || finished) return;
+    e.preventDefault();
+    e.stopPropagation();
+    complete();
   };
+  // A keydown fires as soon as a key is held; key-repeat is also accepted.
+  document.addEventListener('keydown', skipOnKey, true);
+
   const startAudio = () => {
-    if (started) return; started = true;
-    try { if (typeof MUS !== 'undefined') MUS.els.forEach(e => { try { e.pause(); } catch (x) {} }); } catch (e) {}
-    audioSources = ['music/The%20war%20never%20changes.mp3', MUS_ABS + 'The%20war%20never%20changes.mp3', 'music/war-war-never-changes.mp3', MUS_ABS + 'war-war-never-changes.mp3'];
-    audio = new Audio(); audio.preload = 'auto'; audio.volume = MUS.mute ? 0 : MUS.vol;
-    audio.addEventListener('loadedmetadata', setDuration);
-    audio.addEventListener('error', () => {
-      if (audioSourceIndex < audioSources.length - 1) { audioSourceIndex++; audio.src = audioSources[audioSourceIndex]; audio.load(); audio.play().catch(() => {}); }
-      else { addLog('warn', 'Campaign intro audio missing: The war never changes.mp3. The crawl will continue silently.'); }
-    });
-    audio.addEventListener('ended', () => { complete(); });
-    audio.src = audioSources[0]; audio.play().catch(() => { addLog('warn', 'Campaign intro audio could not autoplay; crawl continues silently.'); });
-    root.classList.add('playing'); start.style.display = 'none';
-    // If the audio asset is missing or has no duration metadata, retain a readable crawl.
-    setTimeout(() => { if (!finished && (!audio || audio.error)) complete(); }, 125000);
+    try {
+      if (typeof MUS !== 'undefined') MUS.els.forEach(e => { try { e.pause(); } catch (x) {} });
+      audioSources = [
+        'music/The%20war%20never%20changes.mp3',
+        MUS_ABS + 'The%20war%20never%20changes.mp3',
+        'music/war-war-never-changes.mp3',
+        MUS_ABS + 'war-war-never-changes.mp3'
+      ];
+      audio = new Audio();
+      audio.preload = 'auto';
+      audio.volume = MUS.mute ? 0 : MUS.vol;
+      audio.addEventListener('error', () => {
+        if (audioSourceIndex < audioSources.length - 1) {
+          audioSourceIndex++;
+          audio.src = audioSources[audioSourceIndex];
+          audio.load();
+          audio.play().catch(() => {});
+        }
+      });
+      audio.addEventListener('ended', complete);
+      audio.src = audioSources[0];
+      audio.play().catch(() => {
+        // Browsers may block autoplay after a network join; the text remains readable.
+      });
+    } catch (e) {}
   };
-  crawl.addEventListener('animationend', () => { if (!audio || audio.error || audio.paused) complete(); });
-  begin.addEventListener('click', startAudio);
-  if (!isClient()) { addLog('system', 'Campaign opening crawl started (' + (reason || 'new game') + ').'); }
+  startAudio();
+  if (!isClient()) addLog('system', 'Campaign introduction started (' + (reason || 'new game') + ').');
+  // Fallback for missing audio: leave the text visible long enough to read.
+  setTimeout(() => { if (!finished && (!audio || audio.error)) complete(); }, 120000);
 }
 
 /* =====================================================================
@@ -8137,20 +8155,51 @@ window.VND = {
   }
 
   function vndRenderMainMenu(){
-    let root=document.getElementById('vndMainMenu');if(!root){root=document.createElement('div');root.id='vndMainMenu';root.style.cssText='position:fixed;inset:0;z-index:800;background:radial-gradient(#1b160d,#020302 70%);display:none;align-items:center;justify-content:center;padding:18px;color:#46ff8a;font-family:Courier New,monospace;';document.body.appendChild(root);}
-    root.innerHTML='';const box=document.createElement('div');box.style.cssText='width:min(760px,96vw);max-height:92vh;overflow:auto;border:4px solid #8a6a3a;background:#080b07;padding:24px;box-shadow:0 0 45px rgba(255,182,66,.2);';
-    const title=document.createElement('h1');title.textContent='VAULTS & DEATHCLAWS';title.style.cssText='color:#ffb642;letter-spacing:4px;text-align:center';box.appendChild(title);const sub=document.createElement('p');sub.textContent='NEW ISRAELITE OS · CAMPAIGN CONTROL';sub.style.textAlign='center';box.appendChild(sub);
-    const campaign=document.createElement('input');campaign.placeholder='Campaign name';campaign.value=S.campaignName||'The Texas Wasteland';campaign.style.cssText='width:100%;padding:10px;margin:8px 0';box.appendChild(campaign);
-    const add=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.style.cssText='display:block;width:100%;margin:8px 0;padding:12px';b.onclick=fn;box.appendChild(b)};
-    add('CONTINUE CAMPAIGN',()=>{S.campaignName=campaign.value.trim()||S.campaignName;root.style.display='none';vndSave();});
-    add('HOST A NEW GAME',()=>{if(!confirm('Start a fresh campaign? Existing named save slots will be kept.'))return;root.style.display='none';doNewGame();S.campaignName=campaign.value.trim()||'The Texas Wasteland';vndSave();setTab('mp');mpHostStart();});
-    const slots=getSlots(),names=Object.keys(slots).sort((a,b)=>(slots[b].savedAt||'').localeCompare(slots[a].savedAt||''));
-    const h3=document.createElement('h3');h3.textContent='AVAILABLE CAMPAIGN SAVES';h3.style.color='#ffb642';box.appendChild(h3);
-    if(!names.length){const none=document.createElement('p');none.textContent='No named campaign saves yet. Use SAVE to create one.';box.appendChild(none);}
-    names.forEach(n=>{const snap=slots[n],m=snap.meta||{},b=document.createElement('button');b.className='btn';b.style.cssText='display:block;width:100%;text-align:left;margin:5px 0;padding:9px';b.textContent=`LOAD: ${m.campaignName||n} / ${n} · ${m.clock||''} · ${m.where||''} · ${(m.partyNames||[]).join(', ')||((m.party||0)+' party')}`;b.onclick=()=>{try{loadSlot(n);root.style.display='none';toast('Campaign loaded: '+n,'info');}catch(e){alert(e.message)}};box.appendChild(b);});
-    add('JOIN A HOST SESSION',()=>{const id=prompt('Enter the host session ID');if(!id||!id.trim())return;const nm=prompt('Your player name',lsGet('vnd.mp.name')||'Player')||'Player';root.style.display='none';mpJoin(id.trim(),nm,mpSrvSetting());});
-    add('RETURN TO GAME',()=>{root.style.display='none';});
-    const note=document.createElement('p');note.textContent='The host owns campaign saves, Codex authority, checkpoint adjudication and Super Event controls. Players joining a session receive the host campaign state.';note.style.cssText='font-size:11px;opacity:.7;line-height:1.5';box.appendChild(note);root.appendChild(box);root.style.display='flex';
+    let root=document.getElementById('vndMainMenu');
+    if(!root){
+      root=document.createElement('div');root.id='vndMainMenu';
+      root.style.cssText='position:fixed;inset:0;z-index:18000;background:#000;display:none;align-items:center;justify-content:center;padding:18px;color:#f9d66b;font-family:Courier New,monospace;';
+      document.body.appendChild(root);
+    }
+    root.innerHTML='';
+    const box=document.createElement('div');
+    box.style.cssText='width:min(560px,94vw);border:2px solid #9d823b;background:#000;padding:28px;box-shadow:0 0 28px rgba(249,214,107,.12);';
+    const title=document.createElement('h1');
+    title.textContent='VAULTS & DEATHCLAWS';
+    title.style.cssText='color:#f9d66b;letter-spacing:3px;text-align:center;font-size:clamp(20px,4vw,30px);margin:0 0 28px;';
+    box.appendChild(title);
+    const add=(label,fn)=>{
+      const b=document.createElement('button');b.className='btn';b.textContent=label;
+      b.style.cssText='display:block;width:100%;margin:12px 0;padding:15px;background:#080704;color:#f9d66b;border:1px solid #9d823b;font-size:15px;letter-spacing:2px;';
+      b.onclick=fn;box.appendChild(b);
+    };
+    add('CONTINUE AS HOST',()=>{
+      root.style.display='none';
+      if(isClient()){try{mpLeave();}catch(e){}return;}
+      if(!lsGet(LS_AUTO)){
+        if(!confirm('No host autosave was found. Start a new campaign instead?')){root.style.display='flex';return;}
+        doNewGame();
+      }else{
+        MP.role='host';
+        toast('Continuing campaign as host','info');
+      }
+    });
+    add('START A NEW GAME',()=>{
+      if(!confirm('Start a new campaign? The existing named campaign saves will be kept.'))return;
+      root.style.display='none';
+      if(MP.peer){try{MP.peer.destroy();}catch(e){}MP.peer=null;}
+      MP.role='host';MP.got=false;
+      doNewGame();
+    });
+    add('JOIN GAME',()=>{
+      const id=prompt('Enter the host session ID');
+      if(!id||!id.trim())return;
+      const nm=prompt('Your player name',lsGet('vnd.mp.name')||'Player')||'Player';
+      root.style.display='none';
+      mpJoin(id.trim(),nm,mpSrvSetting());
+    });
+    root.appendChild(box);
+    root.style.display='flex';
   }
 
   const _codexEntries=codexEntries;
