@@ -346,6 +346,8 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
 /* ---- local grid scenes ---- */
 #sceneRoot{position:fixed;inset:0;display:none;z-index:120;background:rgba(0,0,0,.9);align-items:center;justify-content:center}
 #sceneRoot.on{display:flex}
+/* Scene interaction dialogs must appear above the scene overlay. */
+#modalRoot{z-index:150}
 #sceneRoot .tac{box-shadow:0 0 40px rgba(88,184,255,.25)}
 .tc-card.on{border-color:var(--a)}
 
@@ -7156,39 +7158,131 @@ function sceneCommand(msg, who) {
       break;
     }
     case 'door': { const t = scnTokens(sc).find(x => x.uid === msg.uid); if (!t || !scnCanMove(msg.uid, who)) { r = { ok: false, msg: 'Not yours.' }; break; } r = sceneDoor(sc, t, msg.x | 0, msg.y | 0, true); break; }
-    case 'interact': {
-      const n = sc.npcs.find(z => z.id === msg.npcId && !z.dead);
-      const m = S.party.find(z => z.id === msg.mid);
-      if (!n || !m || !scnCanMove('pc:' + m.id, who)) { r = { ok: false, msg: 'Invalid character or NPC.' }; break; }
-      const p = sc.pcs[m.id]; if (!p || Math.max(Math.abs(p.x - n.x), Math.abs(p.y - n.y)) > 1) { r = { ok: false, msg: 'Move adjacent to the NPC first.' }; break; }
-      if (msg.action === 'attack') {
-        const begin = () => { n.disp = 'hostile'; const nearby = sc.npcs.filter(z => !z.dead && z.id !== n.id && n.fac && z.fac === n.fac && Math.max(Math.abs(z.x - n.x), Math.abs(z.y - n.y)) <= 8); nearby.forEach(z => z.disp = 'hostile'); sceneStartCombat(sc, { ambush: false }); };
-        if (who && who.host) begin();
-        else openModal({ title: 'REQUESTED VIOLENCE', body: h('div', { text: `${m.name} wants to attack ${n.name}. Nearby members of ${n.fac || 'the same faction'} within 8 squares will join if they share the NPC faction. Begin combat?` }), buttons: [{ label: 'AUTHORIZE COMBAT', cls: 'btn red', onclick: begin }, { label: 'DENY', cls: 'btn' }] });
-        r = { ok: true };
-      } else if (msg.action === 'social') {
-        const skill = ['Charm','Deception','Gambling','Insight','Intimidation'].includes(msg.skill) ? msg.skill : 'Charm';
-        const pc = skillCheck(m, skill, clamp(+msg.penalty || 0, 0, 200), skill + ' — ' + n.name);
-        const ns = clamp(+((n.entry.skills || {})[skill]) || 0, 0, 200), nr = d100(), nOk = nr <= ns;
-        const playerMargin = pc.target - pc.roll, npcMargin = ns - nr;
-        const win = pc.ok && (!nOk || playerMargin > npcMargin);
-        const tie = pc.ok && nOk && playerMargin === npcMargin;
-        const result = { win, tie, skill, player: pc, npc: { roll: nr, target: ns, ok: nOk }, margin: playerMargin - npcMargin };
-        addLog('system', `${m.name} uses ${skill} with ${n.name}: ${pc.roll}/${pc.target} vs ${nr}/${ns}. ${win ? 'Player wins.' : tie ? 'Tie; defender wins.' : 'NPC resists.'}`);
-        if (typeof sceneSocialResult === 'function') sceneSocialResult(sc, n, m, result);
-        r = { ok: true };
-      } else if (msg.action === 'trade') {
-        sceneTradeDialog(sc, n, m);
-        r = { ok: true };
-      } else { r = { ok: false, msg: 'Unknown interaction.' }; }
-      break;
-    }
+    case 'interact': r = sceneInteract(sc, msg, who); break;
     default: if (who && who.host) r = sceneHost(sc, msg); else r = { ok: false, msg: 'Host only.' };
   }
   if (r.ok) { markDirty(); mpSyncSoon(); }
   if (!r.ok && !isClient() && r.msg) toast(r.msg, 'warn');
   return r;
 }
+/* ---------- NPC social / trade / combat interactions ----------
+   Players may request an interaction from an adjacent square. The host adjudicates
+   every NPC response and rolls VND social skills; clients never resolve outcomes. */
+const SCN_SOCIAL = ['Charm', 'Deception', 'Gambling', 'Insight', 'Intimidation'];
+function scnNearNpc(sc, mid, n) {
+  const p = sc.pcs[mid]; return !!p && Math.max(Math.abs(p.x - n.x), Math.abs(p.y - n.y)) <= 1;
+}
+function scnNpcById(sc, id) { return sc.npcs.find(n => n.id === id && !n.dead) || null; }
+function sceneInteract(sc, msg, who) {
+  const n = scnNpcById(sc, String(msg.npcId || ''));
+  if (!n) return { ok: false, msg: 'That NPC is no longer here.' };
+  let m = null;
+  if (who && who.pub) {
+    m = memberById(String(msg.mid || ''));
+    const a = m && S.assign[m.id];
+    if (!m || !isPC(m) || !a || a.pub !== who.pub) return { ok: false, msg: 'You can only interact as your assigned character.' };
+    if (!scnNearNpc(sc, m.id, n)) return { ok: false, msg: 'Move next to the NPC before interacting.' };
+  } else if (who && who.host) {
+    m = memberById(String(msg.mid || '')) || S.party.find(isPC) || null;
+  } else return { ok: false, msg: 'Interaction request rejected.' };
+  const act = String(msg.act || 'talk');
+  if (!['talk', 'trade', 'fight'].includes(act)) return { ok: false, msg: 'Unknown interaction.' };
+  const requestedBy = who && who.pub ? ((MP.players[who.pub] && MP.players[who.pub].name) || 'A player') : 'The Overseer';
+  addLog('system', `${requestedBy} requested to ${act} ${n.name} as ${m ? m.name : 'the party'}.`);
+  if (who && who.pub) {
+    osNotice(`${requestedBy} requests ${act.toUpperCase()} with ${n.name}`);
+    toast(`${requestedBy} requests ${act.toUpperCase()} with ${n.name}.`, 'warn');
+  }
+  if (act === 'trade') {
+    if (who && who.pub) openModal({ title: 'TRADE REQUEST — ' + n.name, body: h('div', { text: `${m.name} wants to trade with ${n.name}. The Overseer must approve access.` }), buttons: [{ label: 'APPROVE & OPEN TRADE', cls: 'btn grn', onclick: () => scnOpenNpcTrade(sc, n) }, { label: 'DECLINE', cls: 'btn red', onclick: () => { addLog('system', `The Overseer declined ${m.name}'s trade request with ${n.name}.`); } }] });
+    else scnOpenNpcTrade(sc, n);
+    return { ok: true, pending: !!(who && who.pub) };
+  }
+  if (act === 'fight') {
+    scnHostFightPrompt(sc, n);
+    return { ok: true, pending: !!(who && who.pub) };
+  }
+  scnHostTalkPrompt(sc, n, m);
+  return { ok: true, pending: !!(who && who.pub) };
+}
+function scnOpenNpcTrade(sc, n) {
+  let sh = n.shopId && trS().list.find(x => x.id === n.shopId && x.open);
+  if (!sh) { sh = trNewShop('general', { name: n.name + ' — Goods', keeper: n.name, pin: null }); n.shopId = sh.id; sh.caps = Math.max(20, Math.min(sh.capsMax, Math.round((n.entry && n.entry.hp || 50) * 3))); markDirty(); mpSyncSoon(); }
+  if (isClient()) { ui.shop.id = sh.id; openShopScreen(); }
+  else { ui.shop.id = sh.id; openShopScreen(); }
+  addLog('system', `${n.name} opens trade with the party.`);
+}
+function scnHostTalkPrompt(sc, n, requested) {
+  const body = h('div', {});
+  // Companions are host-controlled party members and can make social checks too.
+  const chars = S.party.slice();
+  if (!chars.length) { toast('Add a character or companion before making a social check.', 'warn'); return; }
+  const whoSel = h('select', { class: 'ov-in', style: { width: '100%' } },
+    ...chars.map(m => h('option', { value: m.id, selected: requested && requested.id === m.id,
+      text: m.name + (isPC(m) ? ' · player character' : ' · companion') })));
+  const skillSel = h('select', { class: 'ov-in', style: { width: '100%' } },
+    ...SCN_SOCIAL.map(k => h('option', { value: k, text: k })));
+  const pen = h('input', { class: 'ov-in', type: 'number', value: 0, min: -100, max: 200, style: { width: '100%' } });
+  const narration = h('textarea', { class: 'ov-in', rows: 3, placeholder: 'Optional dialogue, consequence, or what the NPC reveals…', style: { width: '100%' } });
+  const result = h('div', { class: 'fxlines' });
+  const controls = h('div', { class: 'tc-row wrap' });
+  let last = null;
+  body.append(
+    h('div', { class: 'note', text: `Social encounter with ${n.name}. The d100 roll is automatic. Choose any party character, including a host-controlled companion, and a VND Support Skill. Positive penalty makes the check harder; negative gives a bonus.` }),
+    h('div', { class: 'ov-row' }, h('span', { text: 'Character / companion' }), whoSel),
+    h('div', { class: 'ov-row' }, h('span', { text: 'Social Skill' }), skillSel),
+    h('div', { class: 'ov-row' }, h('span', { text: 'Penalty (negative = bonus)' }), pen),
+    h('div', { class: 'note', text: 'Optional host narration / consequence' }), narration, result, controls
+  );
+  const rollNow = () => {
+    const m = memberById(whoSel.value); if (!m) return;
+    const sk = skillSel.value, p = clamp(parseInt(pen.value, 10) || 0, -200, 200);
+    const c = skillCheck(m, sk, p, `${sk} vs ${n.name}`);
+    last = { m, sk, p, c };
+    result.innerHTML = '';
+    result.appendChild(h('div', { class: c.ok ? 'pos' : 'neg', text: `${m.name}: d100 ${c.roll} vs ${c.target} — ${c.ok ? 'SUCCESS' : 'FAILURE'}` }));
+    result.appendChild(h('div', { class: 'note', text: `Automatic VND skill roll recorded in the roll log. ${c.ok ? 'The character passed.' : 'The character failed.'} The Overseer still decides the NPC’s actual response.` }));
+    controls.innerHTML = '';
+    controls.appendChild(scnBtn('REROLL', rollNow, 'on'));
+    [['Keep Neutral', 'neutral', 'btn'], ['Become Ally', 'ally', 'grn'], ['Turn Hostile', 'hostile', 'red']].forEach(([label, disp, cls]) => {
+      controls.appendChild(scnBtn(label, () => {
+        if (!last) return;
+        n.disp = disp;
+        const line = `${last.m.name} used ${last.sk} with ${n.name}: d100 ${last.c.roll} vs ${last.c.target} (${last.c.ok ? 'success' : 'failure'}). Overseer set NPC stance to ${disp}.${narration.value.trim() ? ' ' + narration.value.trim() : ''}`;
+        addLog('system', line); ovAudit(`Social: ${last.m.name} / ${n.name} / ${last.sk} ${last.c.ok ? 'PASS' : 'FAIL'} → ${disp}`);
+        markDirty(); mpSyncSoon(); sceneSync(true); closeModal();
+        if (disp === 'hostile' && scnCfg().autoCombatPrompt) setTimeout(() => scnHostFightPrompt(sc, n), 0);
+      }, cls));
+    });
+  };
+  whoSel.onchange = rollNow;
+  skillSel.onchange = rollNow;
+  pen.onchange = rollNow;
+  openModal({ title: 'NPC SOCIAL ENCOUNTER — ' + n.name, cls: 'wide', body,
+    buttons: [{ label: 'CLOSE', cls: 'btn', onclick: () => { if (last) addLog('system', `Social encounter with ${n.name} closed without changing stance.`); } }] });
+  // Roll as soon as the host popup opens. No second button press is required.
+  rollNow();
+}
+function scnHostCompanionSocial(sc, companion) {
+  const p = sc.pcs[companion.id] || { x: sc.spawn.x, y: sc.spawn.y };
+  const nearby = sc.npcs.filter(n => !n.dead && Math.max(Math.abs(p.x - n.x), Math.abs(p.y - n.y)) <= 1);
+  const target = nearby[0] || sc.npcs.find(n => !n.dead);
+  if (!target) { toast('There are no living scene NPCs to interact with.', 'warn'); return; }
+  scnHostTalkPrompt(sc, target, companion);
+}
+function scnHostFightPrompt(sc, n) {
+  const join = h('input', { type: 'checkbox', checked: true });
+  const radius = h('input', { class: 'ov-in', type: 'number', value: 8, min: 1, max: 30, style: { width: '70px' } });
+  const body = h('div', {}, h('div', { class: 'note', text: `${n.name} is the aggressor. The Overseer decides whether this becomes a fight. Nearby NPCs sharing the aggressor’s faction can join.` }),
+    h('label', { class: 'ov-row' }, join, h('span', { text: 'Nearby same-faction NPCs join the attack' })),
+    h('div', { class: 'ov-row' }, h('span', { text: 'Join radius (squares)' }), radius));
+  openModal({ title: 'HOSTILE ACTION — ' + n.name, body, buttons: [
+    { label: 'MAKE HOSTILE & START COMBAT', cls: 'btn red', onclick: () => { n.disp = 'hostile'; const r = sceneStartCombat(sc, { initiatorId: n.id, joinFaction: join.checked, joinRadius: clamp(+radius.value || 8, 1, 30) }); if (!r.ok) toast(r.msg, 'warn'); sceneSync(true); } },
+    { label: 'MAKE HOSTILE ONLY', cls: 'btn', onclick: () => { n.disp = 'hostile'; markDirty(); mpSyncSoon(); sceneSync(true); } },
+    { label: 'CANCEL', cls: 'btn' }
+  ] });
+}
+
 function sceneDoor(sc, t, x, y, toggle) {       // opening is free in a scene; in combat it costs AP (scnCfg.doorAp)
   const ch = scnCh(sc, x, y); if (ch !== 'd' && ch !== 'o') return { ok: false, msg: 'There is no door there.' };
   const near = Math.max(Math.abs(t.x - x), Math.abs(t.y - y)) <= 1;
@@ -7196,54 +7290,6 @@ function sceneDoor(sc, t, x, y, toggle) {       // opening is free in a scene; i
   if (ch === 'o' && scnAt(sc, x, y)) return { ok: false, msg: 'Someone is standing in the doorway.' };
   if (ch === 'o' && !toggle) return { ok: true };
   scnSetCh(sc, x, y, ch === 'd' ? 'o' : 'd'); return { ok: true };
-}
-function sceneSocialResult(sc, n, m, result) {
-  const summary = `${m.name}: d100 ${result.player.roll} vs ${result.player.target}. ${n.name}: d100 ${result.npc.roll} vs ${result.npc.target}. ` +
-    (result.win ? 'The player wins the opposed check.' : result.tie ? 'Tie: defender wins.' : 'The NPC wins or resists.');
-  const body = h('div', {}, h('div', { text: summary }), h('div', { class: 'note', text: 'The roll does not decide the story. The Overseer chooses how the NPC responds.' }));
-  openModal({ title: 'SOCIAL CHECK — ' + n.name, body, buttons: [
-    { label: 'KEEP NEUTRAL', cls: 'btn', onclick: () => { n.disp = 'neutral'; addLog('system', `${n.name} remains neutral after the conversation.`); markDirty(); mpSyncSoon(); sceneSync(true); } },
-    { label: 'BECOME ALLY', cls: 'btn grn', onclick: () => { n.disp = 'ally'; addLog('system', `${n.name} agrees to help the party.`); markDirty(); mpSyncSoon(); sceneSync(true); } },
-    { label: 'TURN HOSTILE', cls: 'btn red', onclick: () => { n.disp = 'hostile'; addLog('system', `${n.name} turns hostile.`); markDirty(); mpSyncSoon(); sceneSync(true); } }
-  ] });
-}
-function sceneTradeDialog(sc, n, m) {
-  n.inv = Array.isArray(n.inv) ? n.inv : []; n.caps = Number.isFinite(n.caps) ? n.caps : 100;
-  const name = h('input', { id: 'scTradeName', class: 'ov-in', placeholder: 'Item name', style: { width: '100%' } });
-  const qty = h('input', { id: 'scTradeQty', class: 'ov-in', type: 'number', value: '1', style: { width: '70px' } });
-  const price = h('input', { id: 'scTradePrice', class: 'ov-in', type: 'number', value: '10', style: { width: '80px' } });
-  const dir = h('select', { id: 'scTradeDir', class: 'ov-in' }, h('option', { value: 'sell', text: 'Party sells item to NPC' }), h('option', { value: 'buy', text: 'Party buys item from NPC' }));
-  const body = h('div', {}, h('div', { class: 'tc-card', text: `${n.name}: ${n.caps} caps · Stock: ${n.inv.length} item type(s). ${m.name}: ${rpgOf(m).inv.caps || 0} caps.` }),
-    h('div', { class: 'tc-row' }, h('span', { text: 'Trade' }), dir), h('div', { class: 'tc-row' }, h('span', { text: 'Item' }), name),
-    h('div', { class: 'tc-row' }, h('span', { text: 'Qty' }), qty, h('span', { text: 'Total caps' }), price),
-    h('div', { class: 'note', text: 'Overseer-mediated trade. Selling transfers an item from the player to NPC stock; buying transfers an item from NPC stock to the player. Set a fair total price.' }));
-  openModal({ title: 'TRADE — ' + n.name, body, buttons: [
-    { label: 'COMPLETE TRADE', cls: 'btn grn', onclick: () => {
-      const item = $('#scTradeName').value.trim(), q = clamp(parseInt($('#scTradeQty').value, 10) || 1, 1, 999), cost = clamp(parseInt($('#scTradePrice').value, 10) || 0, 0, 999999);
-      if (!item) { toast('Enter an item name.', 'warn'); return false; }
-      const inv = rpgOf(m).inv, direction = $('#scTradeDir').value;
-      if (direction === 'sell') {
-        const it = inv.items.find(z => itemName(z).toLowerCase() === item.toLowerCase() && z.q >= q);
-        if (!it || (inv.caps || 0) < 0 || n.caps < cost) { toast('Player item or NPC funds unavailable.', 'warn'); return false; }
-        const copy = JSON.parse(JSON.stringify(it)); copy.q = q; n.inv.push(copy); it.q -= q; if (it.q <= 0) inv.items.splice(inv.items.indexOf(it), 1);
-        inv.caps -= 0; inv.caps = (inv.caps || 0) + cost; n.caps -= cost;
-      } else {
-        const ix = n.inv.findIndex(z => itemName(z).toLowerCase() === item.toLowerCase() && z.q >= q);
-        if (ix < 0 || (inv.caps || 0) < cost) { toast('NPC does not have that stock or player lacks caps.', 'warn'); return false; }
-        const it = n.inv[ix], copy = JSON.parse(JSON.stringify(it)); copy.q = q; addInv(m, itemName(it), q); it.q -= q; if (it.q <= 0) n.inv.splice(ix, 1);
-        inv.caps -= cost; n.caps += cost;
-      }
-      addLog('system', `Trade completed: ${m.name} and ${n.name}, ${item} ×${q} for ${cost} caps.`); markDirty(); mpSyncSoon(); sceneSync(true);
-    } },
-    { label: 'ADD NPC STOCK', cls: 'btn', onclick: () => {
-      const item = $('#scTradeName').value.trim(), q = clamp(parseInt($('#scTradeQty').value, 10) || 1, 1, 999);
-      if (!item) { toast('Enter an item name to stock.', 'warn'); return false; }
-      const found = n.inv.find(z => itemName(z).toLowerCase() === item.toLowerCase());
-      if (found) found.q += q; else n.inv.push({ u: 'npc' + Math.floor(rand() * 1e9).toString(36), k: 'x', n: item, q });
-      addLog('system', `Overseer stocks ${n.name} with ${item} ×${q}.`); markDirty(); mpSyncSoon(); sceneSync(true); return false;
-    } },
-    { label: 'CANCEL', cls: 'btn' }
-  ] });
 }
 function sceneHost(sc, m) {
   switch (m.cmd) {
@@ -7289,13 +7335,20 @@ function scnGenerate(d) {
   return { entry: e, best: name, race: scnRaceOf(e), role: r.brute ? 'Brute' : r.top, tier: e.defcon, level: d.level | 0 || 1, note, pool: list.length };
 }
 function scnAddNpc(sc, gen, d, x, y) {
-  const n = { id: 'n' + (++sc.npcN), name: (d.name || gen.best).slice(0, 40), x, y, disp: d.disp || 'neutral', best: gen.best, race: gen.race, role: gen.role, tier: gen.tier, level: gen.level, fac: d.fac || '', entry: JSON.parse(JSON.stringify(gen.entry)), hp: null, notes: '', dead: false, caps: 100, inv: [] };
+  const n = { id: 'n' + (++sc.npcN), name: (d.name || gen.best).slice(0, 40), x, y, disp: d.disp || 'neutral', best: gen.best, race: gen.race, role: gen.role, tier: gen.tier, level: gen.level, fac: d.fac || '', entry: JSON.parse(JSON.stringify(gen.entry)), hp: null, notes: '', dead: false };
   sc.npcs.push(n); markDirty(); mpSyncSoon(); return n;
 }
 
 /* ---------- combat on the same grid ---------- */
 function sceneStartCombat(sc, o) {
   o = o || {}; if (S.pending) return { ok: false, msg: 'Resolve the current event first.' };
+  const aggressor = o.initiatorId && scnNpcById(sc, o.initiatorId);
+  if (aggressor) aggressor.disp = 'hostile';
+  if (aggressor && o.joinFaction && aggressor.fac) {
+    const rad = clamp(+o.joinRadius || 8, 1, 30), joined = [];
+    sc.npcs.forEach(n => { if (!n.dead && n.id !== aggressor.id && n.fac === aggressor.fac && n.disp !== 'hostile' && Math.max(Math.abs(n.x - aggressor.x), Math.abs(n.y - aggressor.y)) <= rad) { n.disp = 'hostile'; joined.push(n.name); } });
+    if (joined.length) addLog('encounter', `${joined.join(', ')} join ${aggressor.name} (same faction, within ${rad} squares).`);
+  }
   const hostile = sc.npcs.filter(n => !n.dead && n.disp === 'hostile'); if (!hostile.length) return { ok: false, msg: 'No hostile NPCs on this scene — turn one hostile first.' };
   scnPlacePcs(sc);
   const grid = sc.g.map(r => r.split('')), foes = [], allies = [];
@@ -7341,7 +7394,7 @@ function renderTacScene(side, T, sel, uid) {
 function sceneRootEl() { let r = $('#sceneRoot'); if (!r) { r = h('div', { id: 'sceneRoot' }); document.body.appendChild(r); } return r; }
 function sceneSig() {
   const sc = sceneActive(); if (!sc || S.pending) return 'off:' + (S.sceneOn || '') + (S.pending ? 'p' : '') + ui.scene.hidden;
-  return [sc.id, sc.w, sc.h, sc.name, sc.tag, sc.pin, ui.scene.hidden, ui.scene.edit, ui.scene.sel, ui.scene.mode, ui.scene.place, ui.scene.tool, ui.scene.brush, sc.g.join(''), JSON.stringify(sc.pcs), sc.npcs.map(n => [n.id, n.x, n.y, n.disp, n.dead, n.name, n.hp].join(':')).join(','), S.party.map(m => m.id).join(','), JSON.stringify(ui.scene.gen && ui.scene.gen.best), S.assign && JSON.stringify(S.assign)].join('|');
+  return [sc.id, sc.w, sc.h, sc.name, sc.tag, sc.pin, ui.scene.hidden, ui.scene.edit, ui.scene.sel, ui.scene.mode, ui.scene.place, ui.scene.tool, ui.scene.brush, sc.g.join(''), JSON.stringify(sc.pcs), sc.npcs.map(n => [n.id, n.x, n.y, n.disp, n.dead, n.name, n.hp, n.shopId].join(':')).join(','), S.party.map(m => m.id).join(','), JSON.stringify(ui.scene.gen && ui.scene.gen.best), S.assign && JSON.stringify(S.assign)].join('|');
 }
 function sceneSync(force) {
   const sig = sceneSig(); if (!force && sig === ui.scene.sig) return; ui.scene.sig = sig; sceneRender();
@@ -7416,26 +7469,38 @@ function sceneSide(side, sc, host, edit) {
   side.appendChild(h('div', { class: 'tc-row' }, scnBtn('MOVE / OPEN', () => { U.mode = 'move'; sceneSync(true); }, U.mode === 'move' ? 'on' : ''), scnBtn('TOGGLE DOOR', () => { U.mode = 'door'; sceneSync(true); }, U.mode === 'door' ? 'on' : '')));
   const sel = U.sel && scnTokens(sc).find(t => t.uid === U.sel);
   if (!host) {
-    side.appendChild(h('div', { class: 'note dim', text: 'Move only your own character. Select an NPC while adjacent to interact; the Overseer controls all outcomes.' }));
-    if (sel && sel.npc && !sel.npc.dead) {
-      const mine = Object.keys(S.assign || {}).find(id => S.assign[id] && S.assign[id].pub === (MP.you && MP.you.pub));
-      const m = S.party.find(z => z.id === mine);
-      if (m) {
-        side.appendChild(h('h3', { text: 'INTERACT — ' + sel.npc.name.toUpperCase() }));
+    if (sel && sel.npc) {
+      const n = sel.npc; side.appendChild(h('h3', { text: 'NPC — ' + n.name.toUpperCase() }));
+      side.appendChild(h('div', { class: 'tc-card' + (n.disp === 'hostile' ? ' foe' : '') }, h('b', { text: n.name }), h('div', { class: 'tc-st', text: `${n.race} · ${n.role} · ${n.disp}${n.fac ? ' · ' + n.fac : ''}` })));
+      const chars = myChars().filter(m => sc.pcs[m.id]);
+      if (chars.length) {
+        const midSel = h('select', { class: 'ov-in', style: { width: '100%' } }, ...chars.map(m => h('option', { value: m.id, text: m.name + (scnNearNpc(sc, m.id, n) ? ' · in reach' : ' · too far') })));
+        side.appendChild(h('div', { class: 'ov-row' }, h('span', { text: 'Act as' }), midSel));
+        const near = () => scnNearNpc(sc, midSel.value, n);
         side.appendChild(h('div', { class: 'tc-row wrap' },
-          scnBtn('TALK / CHARM', () => scnSend({ cmd: 'interact', action: 'social', skill: 'Charm', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('DECEIVE', () => scnSend({ cmd: 'interact', action: 'social', skill: 'Deception', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('INSIGHT', () => scnSend({ cmd: 'interact', action: 'social', skill: 'Insight', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('INTIMIDATE', () => scnSend({ cmd: 'interact', action: 'social', skill: 'Intimidation', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('GAMBLE', () => scnSend({ cmd: 'interact', action: 'social', skill: 'Gambling', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('REQUEST TRADE', () => scnSend({ cmd: 'interact', action: 'trade', npcId: sel.npc.id, mid: m.id })),
-          scnBtn('REQUEST FIGHT', () => scnSend({ cmd: 'interact', action: 'attack', npcId: sel.npc.id, mid: m.id }), 'red')
-        ));
-      } else side.appendChild(h('div', { class: 'note warn', text: 'Your character must be assigned by the Overseer before interacting.' }));
+          scnBtn('TALK', () => { if (!near()) return toast('Move next to the NPC first.', 'warn'); scnSend({ cmd: 'interact', act: 'talk', npcId: n.id, mid: midSel.value }); toast('Talk request sent to the Overseer.', 'info'); }),
+          scnBtn('TRADE', () => { if (!near()) return toast('Move next to the NPC first.', 'warn'); scnSend({ cmd: 'interact', act: 'trade', npcId: n.id, mid: midSel.value }); toast('Trade request sent to the Overseer.', 'info'); }),
+          scnBtn('FIGHT', () => { if (!near()) return toast('Move next to the NPC first.', 'warn'); scnSend({ cmd: 'interact', act: 'fight', npcId: n.id, mid: midSel.value }); toast('Attack request sent to the Overseer.', 'warn'); }, 'red')));
+        side.appendChild(h('div', { class: 'note dim', text: 'Interactions require an adjacent square. The Overseer decides NPC responses and resolves social checks.' }));
+      } else side.appendChild(h('div', { class: 'note', text: 'Choose and assign a player character to interact.' }));
     }
-    return;
+    side.appendChild(h('div', { class: 'note dim', text: 'Move only your own character. NPC actions and scene outcomes are controlled by the host.' })); return;
   }
   if (sel && sel.npc) scnNpcCard(side, sc, sel.npc);
+  // Party companions are represented on the scene grid too. The host can select,
+  // move, and use them for social checks; players cannot take control of them.
+  if (host && sel && sel.mid) {
+    const cm = memberById(sel.mid);
+    if (cm && !isPC(cm)) {
+      side.appendChild(h('h3', { text: 'COMPANION CONTROL — ' + cm.name.toUpperCase() }));
+      side.appendChild(h('div', { class: 'tc-card on' },
+        h('b', { text: cm.name + ' · HOST CONTROLLED' }),
+        h('div', { class: 'tc-st', text: `HP ${rpgOf(cm).hp}/${rpgOf(cm).maxHp} · companion follows Overseer commands` })));
+      side.appendChild(h('div', { class: 'tc-row wrap' },
+        scnBtn('ROLL SOCIAL CHECK', () => scnHostCompanionSocial(sc, cm)),
+        scnBtn('OPEN CHARACTER SHEET', () => openSheet(cm.id, 'stats'))));
+    }
+  }
   if (edit) { scnEditor(side, sc); }
   scnNpcGen(side, sc);
   side.appendChild(h('h3', { text: 'SCENE' }));
@@ -7447,12 +7512,8 @@ function scnNpcCard(side, sc, n) {
   const e = n.entry;
   side.appendChild(h('div', { class: 'tc-card ' + (n.disp === 'hostile' ? 'foe' : '') }, h('div', { html: `<b>${esc(n.name)}</b> <span class="dim">${esc(n.race)} · ${esc(n.role)} · tier ${n.tier} · L${n.level}${n.fac ? ' · ' + esc(n.fac) : ''}</span>` }),
     h('div', { class: 'tc-st', text: `HP ${n.hp == null ? e.hp : n.hp}/${e.hp} · AC ${e.armor.ac} · DR ${e.armor.dr} · DT ${Object.values(e.armor.dt).join('/')} · AP ${e.ap} · SQ ${e.sq}${n.dead ? ' · DEAD' : ''}` })));
-  side.appendChild(h('div', { class: 'tc-row wrap' },
-    scnBtn('TALK / CHARM', () => { const m = S.party.find(z => sc.pcs[z.id] && Math.max(Math.abs(sc.pcs[z.id].x - n.x), Math.abs(sc.pcs[z.id].y - n.y)) <= 1); if (m) sceneCommand({ cmd: 'interact', action: 'social', skill: 'Charm', npcId: n.id, mid: m.id }, { host: true }); else toast('Move a party member adjacent first.', 'warn'); }),
-    scnBtn('TRADE', () => { const m = S.party.find(z => sc.pcs[z.id] && Math.max(Math.abs(sc.pcs[z.id].x - n.x), Math.abs(sc.pcs[z.id].y - n.y)) <= 1); if (m) sceneTradeDialog(sc, n, m); else toast('Move a party member adjacent first.', 'warn'); }),
-    scnBtn('ATTACK / START FIGHT', () => { n.disp = 'hostile'; const near = sc.npcs.filter(z => !z.dead && z.id !== n.id && n.fac && z.fac === n.fac && Math.max(Math.abs(z.x - n.x), Math.abs(z.y - n.y)) <= 8); near.forEach(z => z.disp = 'hostile'); sceneStartCombat(sc, {}); }, 'red')
-  ));
-  side.appendChild(h('div', { class: 'tc-row wrap' }, ...['neutral', 'ally', 'hostile'].map(d => scnBtn(d.toUpperCase(), () => { n.disp = d; markDirty(); mpSyncSoon(); if (d === 'hostile' && scnCfg().autoCombatPrompt && !S.pending && !n.dead) openModal({ title: 'HOSTILE', body: h('div', { text: `${n.name} turns hostile. Start tactical combat on this grid now?` }), buttons: [{ label: 'START COMBAT', cls: 'btn red', onclick: () => { scnSend({ cmd: 'combat' }); } }, { label: 'Not yet', cls: 'btn' }] }); sceneSync(true); }, n.disp === d ? 'on' : ''))));
+  side.appendChild(h('div', { class: 'tc-row wrap' }, ...['neutral', 'ally', 'hostile'].map(d => scnBtn(d.toUpperCase(), () => { n.disp = d; markDirty(); mpSyncSoon(); if (d === 'hostile' && scnCfg().autoCombatPrompt && !S.pending && !n.dead) scnHostFightPrompt(sc, n); sceneSync(true); }, n.disp === d ? 'on' : ''))));
+  side.appendChild(h('div', { class: 'tc-row wrap' }, scnBtn('TALK / SOCIAL ROLL', () => scnHostTalkPrompt(sc, n, S.party.find(isPC))), scnBtn(n.shopId ? 'OPEN TRADE' : 'CREATE TRADE', () => scnOpenNpcTrade(sc, n)), scnBtn('ATTACK PARTY', () => scnHostFightPrompt(sc, n), 'red')));
   side.appendChild(h('div', { class: 'tc-row wrap' }, scnBtn('EDIT SHEET', () => scnSheet(n)), scnBtn('REMOVE', () => { sc.npcs = sc.npcs.filter(z => z !== n); ui.scene.sel = null; markDirty(); mpSyncSoon(); sceneSync(true); }, 'red'), n.dead ? scnBtn('REVIVE', () => { n.dead = false; n.hp = null; markDirty(); mpSyncSoon(); sceneSync(true); }) : null));
 }
 function scnNpcGen(side, sc) {
