@@ -7218,8 +7218,11 @@ function scnHostTalkPrompt(sc, n, requested) {
   const chars = S.party.slice();
   if (!chars.length) { toast('Add a character or companion before making a social check.', 'warn'); return; }
   const whoSel = h('select', { class: 'ov-in', style: { width: '100%' } },
-    ...chars.map(m => h('option', { value: m.id, selected: requested && requested.id === m.id,
+    ...chars.map(m => h('option', { value: m.id,
       text: m.name + (isPC(m) ? ' · player character' : ' · companion') })));
+  // Set the live select value after its options exist. Relying only on an
+  // option's selected attribute was inconsistent in the scene modal helper.
+  if (requested && chars.some(m => m.id === requested.id)) whoSel.value = requested.id;
   const skillSel = h('select', { class: 'ov-in', style: { width: '100%' } },
     ...SCN_SOCIAL.map(k => h('option', { value: k, text: k })));
   const pen = h('input', { class: 'ov-in', type: 'number', value: 0, min: -100, max: 200, style: { width: '100%' } });
@@ -7264,11 +7267,32 @@ function scnHostTalkPrompt(sc, n, requested) {
   rollNow();
 }
 function scnHostCompanionSocial(sc, companion) {
-  const p = sc.pcs[companion.id] || { x: sc.spawn.x, y: sc.spawn.y };
-  const nearby = sc.npcs.filter(n => !n.dead && Math.max(Math.abs(p.x - n.x), Math.abs(p.y - n.y)) <= 1);
-  const target = nearby[0] || sc.npcs.find(n => !n.dead);
-  if (!target) { toast('There are no living scene NPCs to interact with.', 'warn'); return; }
-  scnHostTalkPrompt(sc, target, companion);
+  if (!companion || !S.party.some(m => m.id === companion.id)) {
+    toast('That companion is no longer in the party.', 'warn'); return;
+  }
+  const p = sc.pcs[companion.id];
+  if (!p) { toast('That companion has not been placed on the scene grid.', 'warn'); return; }
+  const living = sc.npcs.filter(n => !n.dead);
+  if (!living.length) { toast('There are no living scene NPCs to talk to.', 'warn'); return; }
+  const nearby = living.filter(n => Math.max(Math.abs(p.x - n.x), Math.abs(p.y - n.y)) <= 1);
+  // Prefer an NPC in conversational reach. If none is adjacent, let the
+  // Overseer deliberately choose a target rather than silently rolling
+  // against an unrelated first NPC elsewhere on the map.
+  if (nearby.length === 1) { scnHostTalkPrompt(sc, nearby[0], companion); return; }
+  const choices = nearby.length ? nearby : living;
+  const pick = h('select', { class: 'ov-in', style: { width: '100%' } },
+    ...choices.map(n => h('option', { value: n.id, text: n.name + (nearby.length ? '' : ' · not adjacent') })));
+  const body = h('div', {},
+    h('div', { class: 'note', text: `${companion.name} is attempting to talk. Choose the NPC for the social encounter.` }),
+    h('div', { class: 'ov-row' }, h('span', { text: 'NPC target' }), pick));
+  openModal({ title: 'COMPANION TALK — ' + companion.name, body, buttons: [
+    { label: 'CONTINUE TO CHARM / SOCIAL CHECK', cls: 'btn grn', onclick: () => {
+      const target = choices.find(n => n.id === pick.value);
+      if (!target) { toast('Choose a valid NPC target.', 'warn'); return; }
+      closeModal(); scnHostTalkPrompt(sc, target, companion);
+    } },
+    { label: 'CANCEL', cls: 'btn' }
+  ] });
 }
 function scnHostFightPrompt(sc, n) {
   const join = h('input', { type: 'checkbox', checked: true });
@@ -7497,7 +7521,7 @@ function sceneSide(side, sc, host, edit) {
         h('b', { text: cm.name + ' · HOST CONTROLLED' }),
         h('div', { class: 'tc-st', text: `HP ${rpgOf(cm).hp}/${rpgOf(cm).maxHp} · companion follows Overseer commands` })));
       side.appendChild(h('div', { class: 'tc-row wrap' },
-        scnBtn('ROLL SOCIAL CHECK', () => scnHostCompanionSocial(sc, cm)),
+        scnBtn('TALK / CHARM', () => scnHostCompanionSocial(sc, cm)),
         scnBtn('OPEN CHARACTER SHEET', () => openSheet(cm.id, 'stats'))));
     }
   }
