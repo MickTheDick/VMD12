@@ -7980,12 +7980,220 @@ function boot() {
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.modalOpen) closeModal(); });
   window.addEventListener('error', e => { window.__vndErr = (window.__vndErr || []).concat(String(e.message)); });
   requestAnimationFrame(t => { lastTs = t; requestAnimationFrame(frame); });
-  bootScreen(() => { window.__vndReady = true; if (!jn) setTimeout(() => maybeShowCampaignIntro(restored ? 'save-load' : 'first-new-game'), 180); });
+  bootScreen(() => { window.__vndReady = true; if (!isClient() && typeof vndRenderMainMenu === 'function') setTimeout(() => vndRenderMainMenu(), 180); });
 }
 window.VND = {
   get S() { return S; }, simTick, startTravel, startActivity, triggerEncounter, triggerEvent, chooseOption, closePending, applySnapshot, makeSnapshot, saveSlot, loadSlot, getSlots,
   autosave, exportSave, importSaveText, MP, castVote, calmMember, resolveVotes, setInPlay, questSave, questSetStatus, questVote, questClearVotes, mpHostStart, mpAssign, mpKick, inviteLink, memberById, refreshPendingView, newQuest, estimateTrip, curWeather, hereInfo, fmtDT, ENC, EVT, WX, REGIONS, WORLD_LOCS, PIN, discoverPin, doNewGame, isRunning, MILES_PER_MAP_WIDTH, passTime, setMapView
 };
+
+/* =====================================================================
+   VND CAMPAIGN SYSTEMS EXPANSION
+   Notes, journal, holotapes, 30-day checkpoint cycle, Super Events,
+   campaign menu/save selection and host-controlled Codex reveals.
+   All campaign content lives in S and therefore follows snapshot/save sync.
+   ===================================================================== */
+(function installCampaignSystems(){
+  const _newState = newState;
+  newState = function(keepSettings){
+    const out = _newState(keepSettings);
+    S.campaignName = S.campaignName || 'The Texas Wasteland';
+    S.campaignStartDay = 0;
+    S.notes = []; S.journal = []; S.holotapes = [];
+    S.checkpoint = { interval:30, nextDay:30, pending:false, lastNoticeDay:0, visits:0, grants:0, locationId:null, overrides:[] };
+    S.superEvents = []; S.codexReveals = {};
+    return out;
+  };
+  const _makeSnapshot = makeSnapshot;
+  makeSnapshot = function(name){const snap=_makeSnapshot(name);snap.meta.campaignName=S.campaignName||'The Texas Wasteland';snap.meta.partyNames=(S.party||[]).map(m=>m.name);return snap;};
+  const _migrateSave = migrateSave;
+  migrateSave = function(snap){
+    const st = _migrateSave(snap);
+    st.notes = Array.isArray(st.notes) ? st.notes : [];
+    st.journal = Array.isArray(st.journal) ? st.journal : [];
+    st.holotapes = Array.isArray(st.holotapes) ? st.holotapes : [];
+    st.superEvents = Array.isArray(st.superEvents) ? st.superEvents : [];
+    st.codexReveals = st.codexReveals || {};
+    st.campaignName = st.campaignName || snap.name || 'The Texas Wasteland';
+    st.campaignStartDay = Number.isFinite(st.campaignStartDay) ? st.campaignStartDay : 0;
+    st.checkpoint = Object.assign({interval:30,nextDay:30,pending:false,lastNoticeDay:0,visits:0,grants:0,locationId:null,overrides:[]},st.checkpoint||{});
+    return st;
+  };
+  const _advanceWorld = advanceWorld;
+  advanceWorld = function(dt,kind,ctx){ _advanceWorld(dt,kind,ctx); vndCheckpointTick(); };
+  const _slowUi = slowUi;
+  slowUi = function(){ _slowUi(); vndSuperEventPoll(); };
+
+  function vndId(){return 'vnd_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8)}
+  function vndHost(){return !isClient()}
+  function vndSave(){ if(vndHost()){markDirty(); autosave(); mpSyncSoon();} }
+  function vndAudit(msg){ addLog('system',msg); if(!S.audit)S.audit=[]; S.audit.push({t:S.t,text:msg}); if(S.audit.length>300)S.audit.shift(); }
+  function vndFileData(file,cb){const rd=new FileReader();rd.onload=()=>cb(String(rd.result||''));rd.onerror=()=>toast('Could not read that file','warn');rd.readAsDataURL(file)}
+  function vndCheckpointPin(){
+    if(S.checkpoint.locationId && PIN[S.checkpoint.locationId]) return PIN[S.checkpoint.locationId];
+    const p=PINS.find(x=>isLoc(x)&&/new israelite checkpoint|new israel checkpoint|new galilee|new israel/i.test(x.name));
+    if(p){S.checkpoint.locationId=p.id;return p;} return null;
+  }
+  function vndCheckpointTick(){
+    if(!vndHost()||!S.checkpoint)return;
+    const day=Math.floor(S.t/1440)+1, cp=S.checkpoint;
+    if(day>=cp.nextDay&&!cp.pending){cp.pending=true;cp.lastNoticeDay=day;const pin=vndCheckpointPin();
+      const msg=`NEW ISRAELITE CHECKPOINT DUE: Day ${day}. Visit ${pin?pin.name:'a New Israelite checkpoint'} to request the 30-day reinforcement and supply allotment.`;
+      addLog('event',msg);toast('30-DAY CHECKPOINT DUE','discover');osNotice('New Israelite checkpoint visit due');vndSave();}
+    const pin=vndCheckpointPin();
+    if(cp.pending&&pin&&hereInfo().at&&hereInfo().pin&&hereInfo().pin.id===pin.id){
+      cp.pending=false;cp.visits++;cp.lastArrivalDay=day;cp.lastArrivalAt=fmtDT(S.t);cp.nextDay=day+(cp.interval||30);S.discovered[pin.id]=true;
+      addLog('event',`CHECKPOINT ARRIVAL recorded at ${pin.name} on day ${day}. Host must adjudicate the supply/reinforcement request.`);
+      osNotice('Checkpoint arrival recorded');vndSave();
+    }
+  }
+  function vndGrantCheckpoint(){
+    if(!vndHost())return;const cp=S.checkpoint;
+    // Host-authorized baseline supply allotment. Host may edit the quantities before granting.
+    const grants={food:Math.max(0,+($('#cpFood')?.value||12)),water:Math.max(0,+($('#cpWater')?.value||24)),ammo:Math.max(0,+($('#cpAmmo')?.value||12)),stims:Math.max(0,+($('#cpStims')?.value||2)),caps:Math.max(0,+($('#cpCaps')?.value||100)),parts:Math.max(0,+($('#cpParts')?.value||3))};
+    Object.keys(grants).forEach(k=>S.res[k]=(S.res[k]||0)+grants[k]);cp.grants++;cp.lastGrantDay=Math.floor(S.t/1440)+1;
+    addLog('event',`NEW ISRAELITE CHECKPOINT SUPPLY GRANT: ${Object.entries(grants).map(([k,v])=>`${v} ${k}`).join(', ')}.`);
+    vndAudit('Host authorized checkpoint supply grant #'+cp.grants);vndSave();renderTab();toast('Checkpoint supplies granted','info');
+  }
+  function vndCheckpointOverride(){const cp=S.checkpoint,interval=Math.max(1,Math.min(365,+($('#cpInterval')?.value||30))),days=Math.max(1,+($('#cpNext')?.value||1));cp.interval=interval;cp.nextDay=Math.floor(S.t/1440)+days;cp.pending=false;cp.overrides.push({t:S.t,nextDay:cp.nextDay,interval,by:hostName()});vndAudit(`Host checkpoint override: next visit due day ${cp.nextDay}; interval ${interval} days.`);vndSave();renderTab();}
+
+  function vndRenderNotes(body){
+    body.appendChild(h('h3',{text:'CAMPAIGN NOTES'}));
+    if(!vndHost())body.appendChild(h('div',{class:'note',text:'Notes are shared with the campaign. Your additions are sent to the host for storage.'}));
+    {
+      const title=h('input',{type:'text',placeholder:'Note title',style:{width:'100%'}}),texta=h('textarea',{placeholder:'Write a clue, plan, rumor, rule reminder or discovered detail…',rows:4,style:{width:'100%'}}),vis=h('select',{style:{width:'100%'}});
+      if(vndHost()){vis.appendChild(h('option',{value:'party',text:'Party visible'}));vis.appendChild(h('option',{value:'host',text:'Host only'}));}else vis.appendChild(h('option',{value:'party',text:'Party visible'}));
+      body.appendChild(h('div',{class:'slot'},title,texta,vis,h('div',{class:'row'},h('button',{class:'btn sm grn',text:'ADD NOTE',onclick:()=>{const t=title.value.trim(),v=texta.value.trim();if(!t&&!v)return toast('Write a title or note first','warn');const entry={id:vndId(),title:t||'Untitled note',text:v,visibility:vis.value,created:S.t,updated:S.t,author:vndHost()?hostName():(MP.joinName||'Player'),authorPub:vndHost()?'host':(MP.you.pub||'')};if(vndHost()){S.notes.unshift(entry);vndAudit('Campaign note created: '+entry.title);vndSave();renderTab();}else mpSend({t:'campaign',act:'noteAdd',entry:{title:entry.title,text:entry.text}});}}))));
+    }
+    (S.notes||[]).filter(n=>vndHost()||n.visibility!=='host').forEach(n=>{
+      const card=h('div',{class:'slot'},h('div',{class:'h'},h('b',{text:n.title}),h('span',{class:'note',text:(n.visibility==='host'?'HOST ONLY · ':'')+fmtShortDate(n.created)})),h('div',{class:'hist',text:n.text||''}));
+      if(vndHost())card.appendChild(h('div',{class:'row'},h('button',{class:'btn sm',text:'EDIT',onclick:()=>{const t=prompt('Note title',n.title);if(t===null)return;const v=prompt('Note text',n.text);if(v===null)return;n.title=t;n.text=v;n.updated=S.t;vndAudit('Campaign note edited: '+n.title);vndSave();renderTab();}}),h('button',{class:'btn sm red',text:'DELETE',onclick:()=>confirmBox('Delete note','Delete this campaign note?',()=>{S.notes=S.notes.filter(x=>x.id!==n.id);vndAudit('Campaign note deleted: '+n.title);vndSave();renderTab();},'Delete')})));
+      else if(n.authorPub&&MP.you&&n.authorPub===MP.you.pub)card.appendChild(h('div',{class:'row'},h('button',{class:'btn sm',text:'EDIT MY NOTE',onclick:()=>{const t=prompt('Note title',n.title);if(t===null)return;const v=prompt('Note text',n.text);if(v===null)return;mpSend({t:'campaign',act:'noteEdit',id:n.id,entry:{title:t,text:v}});}}),h('button',{class:'btn sm red',text:'DELETE MY NOTE',onclick:()=>{if(confirm('Delete your note?'))mpSend({t:'campaign',act:'noteDelete',id:n.id});}})));
+      body.appendChild(card);
+    });
+    if(!S.notes.length)body.appendChild(h('div',{class:'note',text:'No notes yet.'}));
+  }
+  function vndRenderJournal(body){
+    body.appendChild(h('h3',{text:'PARTY JOURNAL'}));
+    {
+      const title=h('input',{type:'text',placeholder:'Entry heading',style:{width:'100%'}}),txt=h('textarea',{rows:4,placeholder:'Record what happened, decisions, discoveries, deaths, alliances and unresolved leads…',style:{width:'100%'}}),kind=h('select',{style:{width:'100%'}});
+      [['event','Event'],['discovery','Discovery'],['decision','Party decision'],['character','Character'],['lead','Unresolved lead']].forEach(([v,l])=>kind.appendChild(h('option',{value:v,text:l})));
+      body.appendChild(h('div',{class:'slot'},title,txt,kind,h('div',{class:'row'},h('button',{class:'btn sm grn',text:'RECORD ENTRY',onclick:()=>{if(!txt.value.trim())return toast('Journal entry cannot be empty','warn');const entry={id:vndId(),title:title.value.trim()||'Field report',text:txt.value.trim(),kind:kind.value,t:S.t,author:vndHost()?hostName():(MP.joinName||'Player'),authorPub:vndHost()?'host':(MP.you.pub||'')};if(vndHost()){S.journal.unshift(entry);addLog('quest','JOURNAL: '+entry.title);vndSave();renderTab();}else mpSend({t:'campaign',act:'journalAdd',entry:{title:entry.title,text:entry.text,kind:entry.kind}});}}))));
+    }
+    (S.journal||[]).slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)||b.t-a.t).forEach(e=>body.appendChild(h('div',{class:'slot'},h('div',{class:'h'},h('b',{text:e.title}),h('span',{class:'note',text:`${String(e.kind||'event').toUpperCase()} · ${fmtDT(e.t)} · ${e.author||'Unknown'}`})),h('div',{class:'hist',text:e.text}),vndHost()?h('div',{class:'row'},h('button',{class:'btn sm',text:e.pinned?'UNPIN':'PIN',onclick:()=>{e.pinned=!e.pinned;vndAudit(`Journal entry ${e.pinned?'pinned':'unpinned'}: ${e.title}`);vndSave();renderTab();}}),h('button',{class:'btn sm red',text:'DELETE',onclick:()=>confirmBox('Delete journal entry','Remove this entry?',()=>{S.journal=S.journal.filter(x=>x.id!==e.id);vndSave();renderTab();},'Delete')})):null)));
+    if(!S.journal.length)body.appendChild(h('div',{class:'note',text:'The party journal is empty. The host can record major events here.'}));
+  }
+  function vndRenderHolotapes(body){
+    body.appendChild(h('h3',{text:'HOLOTAPE LIBRARY'}));
+    body.appendChild(h('div',{class:'note',text:'Upload audio files as in-world holotapes. Files are stored in the campaign save and synchronized to connected players. Large audio files increase save and multiplayer transfer size.'}));
+    if(vndHost()){
+      const name=h('input',{type:'text',placeholder:'Holotape title',style:{width:'100%'}}),desc=h('textarea',{rows:2,placeholder:'Recording description / transcript',style:{width:'100%'}}),file=h('input',{type:'file',accept:'audio/*'}),cover=h('input',{type:'file',accept:'image/*'}),loc=h('input',{type:'text',placeholder:'Optional location tag',style:{width:'100%'}});
+      body.appendChild(h('div',{class:'slot'},name,desc,h('div',{class:'note',text:'AUDIO RECORDING'}),file,h('div',{class:'note',text:'OPTIONAL COVER IMAGE'}),cover,loc,h('div',{class:'row'},h('button',{class:'btn sm grn',text:'ADD RECORDING',onclick:()=>{const f=file.files&&file.files[0];if(!f)return toast('Choose an audio file','warn');if(f.size>1*1024*1024)return toast('Holotapes are limited to 1 MB each so campaign saves and multiplayer sync remain reliable','warn');vndFileData(f,data=>{const save=image=>{S.holotapes.unshift({id:vndId(),title:name.value.trim()||f.name,description:desc.value.trim(),location:loc.value.trim(),fileName:f.name,mime:f.type||'audio/mpeg',data,image:image||'',unlocked:true,created:S.t});vndAudit('Holotape added: '+f.name);vndSave();renderTab();};const im=cover.files&&cover.files[0];if(im){if(im.size>1*1024*1024)return toast('Holotape cover images are limited to 1 MB','warn');vndFileData(im,save);}else save('');});}}))));
+    }
+    (S.holotapes||[]).filter(t=>vndHost()||t.unlocked!==false).forEach(t=>{const c=h('div',{class:'slot'},h('div',{class:'h'},h('b',{text:t.title}),h('span',{class:'note',text:fmtDT(t.created)})),h('div',{class:'note',text:(t.description||t.fileName||'')+(t.location?' · LOCATION: '+t.location:'')}));if(t.image){const im=h('img',{src:t.image,alt:t.title,style:{maxWidth:'100%',maxHeight:'160px',display:'block',margin:'5px 0'}});c.appendChild(im);}const a=h('audio',{controls:true,preload:'none',style:{width:'100%'}});a.src=t.data;c.appendChild(a);if(vndHost())c.appendChild(h('div',{class:'row'},h('button',{class:'btn sm',text:t.unlocked===false?'UNLOCK':'LOCK',onclick:()=>{t.unlocked=t.unlocked===false;vndAudit(`Holotape ${t.unlocked?'unlocked':'locked'}: ${t.title}`);vndSave();renderTab();}}),h('button',{class:'btn sm red',text:'DELETE HOLOTAPE',onclick:()=>confirmBox('Delete holotape','Permanently remove this recording?',()=>{S.holotapes=S.holotapes.filter(x=>x.id!==t.id);vndAudit('Holotape deleted: '+t.title);vndSave();renderTab();},'Delete')})));body.appendChild(c);});
+    if(!S.holotapes.length)body.appendChild(h('div',{class:'note',text:'No holotapes recorded.'}));
+  }
+  function vndRenderCheckpoint(body){
+    const cp=S.checkpoint||{};const pin=vndCheckpointPin();body.appendChild(h('h3',{text:'NEW ISRAELITE 30-DAY CHECKPOINT'}));
+    body.appendChild(h('div',{class:'slot'},h('div',{class:'h'},h('b',{text:cp.pending?'CHECKPOINT VISIT DUE':'CHECKPOINT CYCLE ACTIVE'}),h('span',{class:'badge',text:`EVERY ${cp.interval||30} DAYS`})),h('div',{text:`Current campaign day: ${Math.floor(S.t/1440)+1}`}),h('div',{text:`Next checkpoint due: day ${cp.nextDay||30}`}),h('div',{text:`Checkpoint location: ${pin?pin.name:'Not configured in map data'}`} ),h('div',{text:`Recorded visits: ${cp.visits||0} · Supply grants: ${cp.grants||0}`})));
+    if(cp.pending)body.appendChild(h('div',{class:'warn',text:'The 30-day window has arrived. The notification remains active until the party visits the checkpoint or the host clears/overrides it.'}));
+    if(vndHost()){
+      body.appendChild(h('h3',{text:'HOST ADJUDICATION'}));
+      const cpLoc=h('select',{style:{width:'100%'}});cpLoc.appendChild(h('option',{value:'',text:'Choose checkpoint location…'}));WORLD_LOCS.forEach(p=>cpLoc.appendChild(h('option',{value:p.id,selected:p.id===cp.locationId,text:p.name})));cpLoc.onchange=()=>{cp.locationId=cpLoc.value||null;if(cp.locationId)S.discovered[cp.locationId]=true;vndAudit('Host set New Israelite checkpoint location: '+(PIN[cp.locationId]?.name||'Unassigned'));vndSave();renderTab();};body.appendChild(h('div',{class:'row'},h('label',{text:'Checkpoint location'}),cpLoc));
+      const f=(id,ph,val)=>h('input',{type:'number',id,min:0,value:val,style:{width:'76px'}});
+      body.appendChild(h('div',{class:'row'},h('label',{text:'Food'}),f('cpFood','',12),h('label',{text:'Water'}),f('cpWater','',24),h('label',{text:'Ammo'}),f('cpAmmo','',12),h('label',{text:'Stims'}),f('cpStims','',2),h('label',{text:'Caps'}),f('cpCaps','',100)));
+      body.appendChild(h('div',{class:'row'},h('label',{text:'Parts'}),f('cpParts','',3)));
+      body.appendChild(h('div',{class:'row'},h('button',{class:'btn sm grn',text:'GRANT SUPPLIES',onclick:vndGrantCheckpoint}),h('button',{class:'btn sm',text:'CLEAR NOTICE',onclick:()=>{cp.pending=false;vndAudit('Host cleared the pending checkpoint notification.');vndSave();renderTab();}})));
+      body.appendChild(h('div',{class:'row'},h('label',{text:'Cycle interval (days)'}),h('input',{id:'cpInterval',type:'number',min:1,max:365,value:cp.interval||30,style:{width:'70px'}}),h('label',{text:'Next due in (days)'}),h('input',{id:'cpNext',type:'number',min:1,value:Math.max(1,(cp.nextDay||30)-(Math.floor(S.t/1440)+1)),style:{width:'70px'}}),h('button',{class:'btn sm',text:'APPLY OVERRIDE',onclick:vndCheckpointOverride})));
+      const faction=h('select',{style:{width:'100%'}});[['joshuas_hand',"Joshua's Hand"],['nicodemites','Nicodemites']].forEach(([v,l])=>faction.appendChild(h('option',{value:v,text:l})));
+      body.appendChild(h('div',{class:'row'},h('label',{text:'Reinforcement faction'}),faction,h('button',{class:'btn sm grn',text:'REQUEST REINFORCEMENT',onclick:()=>{const key=faction.value,hand=key==='joshuas_hand',names=hand?['Joshua’s Hand Scout','Joshua’s Hand Rifleman','Joshua’s Hand Medic']:['Nicodemite Pilgrim','Nicodemite Guard','Nicodemite Envoy'],name=names[Math.floor(Math.random()*names.length)],m=newMember(name,{kind:'npc',desc:`Reinforcement dispatched from ${hand?"Joshua's Hand":'the Nicodemites'} through the New Israelite checkpoint.`,flaw:'none',skills:{combat:hand?7:5,aware:6,social:hand?4:7,endure:6},fatigue:0,hp:100});m.faction=key;m.roster='reserve';S.bench.push(m);rpgEnsureAll();cp.lastReinforcement={name,faction:key,t:S.t};vndAudit(`Checkpoint reinforcement requested and received: ${name} from ${hand?"Joshua's Hand":'the Nicodemites'}. Character added to Reserve.`);addLog('event',`${name} arrived as a checkpoint reinforcement and joined Reserve.`);vndSave();renderTab();}})));
+      body.appendChild(h('div',{class:'note',text:'Arrivals, requests, grants and overrides are written to host logs. Reinforcements are generated as VND companions and placed in Reserve for host roster management. The host may adjudicate social checks or reputation before approving a request.'}));
+    }
+  }
+  function vndRenderSuperEvents(body){
+    body.appendChild(h('h3',{text:'SUPER EVENTS'}));body.appendChild(h('div',{class:'note',text:'A Super Event combines an image, audio track and caption. The host triggers it for all connected players. Each player can dismiss it, or the host can advance it.'}));
+    if(vndHost()){
+      const title=h('input',{type:'text',placeholder:'Event title (optional)',style:{width:'100%'}}),caption=h('textarea',{rows:4,placeholder:'Caption / narrative text shown to all players…',style:{width:'100%'}}),img=h('input',{type:'file',accept:'image/*'}),aud=h('input',{type:'file',accept:'audio/*'});
+      body.appendChild(h('div',{class:'slot'},title,h('div',{class:'note',text:'IMAGE'}),img,h('div',{class:'note',text:'AUDIO'}),aud,caption,h('div',{class:'row'},h('button',{class:'btn sm grn',text:'TRIGGER SUPER EVENT',onclick:()=>{const fi=img.files&&img.files[0],fa=aud.files&&aud.files[0];if(!fi||!fa||!caption.value.trim())return toast('Choose an image, audio file and caption','warn');if(fi.size>1*1024*1024||fa.size>1*1024*1024)return toast('Super Event image and audio are each limited to 1 MB for multiplayer reliability','warn');vndFileData(fi,idata=>vndFileData(fa,adata=>{const ev={id:vndId(),title:title.value.trim()||'SUPER EVENT',caption:caption.value.trim(),image:dataURLSafe(idata),audio:adata,at:S.t,triggeredBy:hostName(),dismissed:{},active:true};S.superEvents.unshift(ev);if(S.superEvents.length>30)S.superEvents.length=30;vndAudit('SUPER EVENT triggered: '+ev.title);vndSave();vndShowSuperEvent(ev);renderTab();}));}}))));
+    }
+    (S.superEvents||[]).forEach(ev=>body.appendChild(h('div',{class:'slot'},h('b',{text:ev.title}),h('div',{class:'note',text:`Triggered by ${ev.triggeredBy||'Host'} · ${fmtDT(ev.at)}`}),h('div',{class:'hist',text:ev.caption}),h('div',{class:'row'},h('button',{class:'btn sm',text:'REVIEW',onclick:()=>vndShowSuperEvent(ev)}),vndHost()&&ev.active?h('button',{class:'btn sm',text:'ADVANCE / DISMISS FOR ALL',onclick:()=>{ev.active=false;ev.endedAt=S.t;vndAudit('Super Event advanced by host: '+ev.title);vndSave();renderTab();}}):null,vndHost()?h('button',{class:'btn sm red',text:'DELETE',onclick:()=>confirmBox('Delete Super Event','Remove this event from campaign history?',()=>{S.superEvents=S.superEvents.filter(x=>x.id!==ev.id);vndSave();renderTab();},'Delete')}):null))));
+  }
+  function dataURLSafe(v){return v}
+  let lastSuperEvent='';
+  function vndShowSuperEvent(ev){
+    if(!ev)return;lastSuperEvent=ev.id;
+    let root=document.getElementById('vndSuperEventRoot');if(!root){root=document.createElement('div');root.id='vndSuperEventRoot';root.style.cssText='position:fixed;inset:0;z-index:950;background:rgba(0,0,0,.96);display:none;align-items:center;justify-content:center;padding:3vh 3vw;color:#f6cf56;font-family:Courier New,monospace;';document.body.appendChild(root);}
+    root.innerHTML='';const panel=document.createElement('div');panel.style.cssText='width:min(1100px,96vw);max-height:94vh;overflow:auto;border:3px solid #b58b3b;background:#090806;padding:18px;text-align:center;box-shadow:0 0 35px #8b6428;';
+    const hd=document.createElement('h2');hd.textContent=ev.title;panel.appendChild(hd);const image=document.createElement('img');image.src=ev.image;image.alt=ev.title;image.style.cssText='display:block;max-width:100%;max-height:55vh;margin:0 auto 14px;object-fit:contain;';panel.appendChild(image);const cap=document.createElement('p');cap.textContent=ev.caption;cap.style.cssText='white-space:pre-wrap;text-align:left;line-height:1.6;color:#f3e4bd;';panel.appendChild(cap);const audio=document.createElement('audio');audio.controls=true;audio.autoplay=true;audio.src=ev.audio;audio.style.width='100%';panel.appendChild(audio);
+    const close=document.createElement('button');close.className='btn';close.textContent='DISMISS';close.onclick=()=>{root.style.display='none';audio.pause();if(ev.dismissed)ev.dismissed[isClient()?(MP.you.pub||'player'):'host']=true;if(isClient())try{localStorage.setItem('vnd.super.seen.'+ev.id,'1')}catch(e){}};panel.appendChild(close);root.appendChild(panel);root.style.display='flex';audio.play().catch(()=>{});
+  }
+  function vndSuperEventPoll(){if(!isClient()||!S.superEvents||!S.superEvents.length)return;const ev=S.superEvents[0];let seen=false;try{seen=localStorage.getItem('vnd.super.seen.'+ev.id)==='1'}catch(e){}if(ev&&ev.active&&ev.id!==lastSuperEvent&&!seen){vndShowSuperEvent(ev);toast('A SUPER EVENT HAS BEGUN','discover');}}
+
+  function vndRenderCodexAuthority(body){
+    body.appendChild(h('h3',{text:'CODEX ACCESS AUTHORITY'}));body.appendChild(h('div',{class:'note',text:'The host has the full Codex. Players only see entries explicitly revealed for this campaign. Reveals persist with the campaign save and are audit logged.'}));
+    if(!vndHost()){body.appendChild(h('div',{class:'note',text:'The campaign Codex is controlled by the host. Revealed entries are available in the CODEX tab.'}));return;}
+    const entries=PINS;
+    entries.forEach(p=>{const visible=!!S.codexReveals[p.id];body.appendChild(h('div',{class:'cod'},h('span',{text:p.name}),h('span',{class:'ty',text:visible?'REVEALED':'HIDDEN'}),vndHost()?h('button',{class:'btn sm',text:visible?'HIDE':'REVEAL',onclick:()=>{if(visible)delete S.codexReveals[p.id];else S.codexReveals[p.id]=true;vndAudit(`Codex entry ${visible?'hidden':'revealed'}: ${p.name}`);vndSave();renderTab();}}):null));});
+  }
+
+  function vndRenderMainMenu(){
+    let root=document.getElementById('vndMainMenu');if(!root){root=document.createElement('div');root.id='vndMainMenu';root.style.cssText='position:fixed;inset:0;z-index:800;background:radial-gradient(#1b160d,#020302 70%);display:none;align-items:center;justify-content:center;padding:18px;color:#46ff8a;font-family:Courier New,monospace;';document.body.appendChild(root);}
+    root.innerHTML='';const box=document.createElement('div');box.style.cssText='width:min(760px,96vw);max-height:92vh;overflow:auto;border:4px solid #8a6a3a;background:#080b07;padding:24px;box-shadow:0 0 45px rgba(255,182,66,.2);';
+    const title=document.createElement('h1');title.textContent='VAULTS & DEATHCLAWS';title.style.cssText='color:#ffb642;letter-spacing:4px;text-align:center';box.appendChild(title);const sub=document.createElement('p');sub.textContent='NEW ISRAELITE OS · CAMPAIGN CONTROL';sub.style.textAlign='center';box.appendChild(sub);
+    const campaign=document.createElement('input');campaign.placeholder='Campaign name';campaign.value=S.campaignName||'The Texas Wasteland';campaign.style.cssText='width:100%;padding:10px;margin:8px 0';box.appendChild(campaign);
+    const add=(label,fn)=>{const b=document.createElement('button');b.className='btn';b.textContent=label;b.style.cssText='display:block;width:100%;margin:8px 0;padding:12px';b.onclick=fn;box.appendChild(b)};
+    add('CONTINUE CAMPAIGN',()=>{S.campaignName=campaign.value.trim()||S.campaignName;root.style.display='none';vndSave();});
+    add('HOST A NEW GAME',()=>{if(!confirm('Start a fresh campaign? Existing named save slots will be kept.'))return;root.style.display='none';doNewGame();S.campaignName=campaign.value.trim()||'The Texas Wasteland';vndSave();setTab('mp');mpHostStart();});
+    const slots=getSlots(),names=Object.keys(slots).sort((a,b)=>(slots[b].savedAt||'').localeCompare(slots[a].savedAt||''));
+    const h3=document.createElement('h3');h3.textContent='AVAILABLE CAMPAIGN SAVES';h3.style.color='#ffb642';box.appendChild(h3);
+    if(!names.length){const none=document.createElement('p');none.textContent='No named campaign saves yet. Use SAVE to create one.';box.appendChild(none);}
+    names.forEach(n=>{const snap=slots[n],m=snap.meta||{},b=document.createElement('button');b.className='btn';b.style.cssText='display:block;width:100%;text-align:left;margin:5px 0;padding:9px';b.textContent=`LOAD: ${m.campaignName||n} / ${n} · ${m.clock||''} · ${m.where||''} · ${(m.partyNames||[]).join(', ')||((m.party||0)+' party')}`;b.onclick=()=>{try{loadSlot(n);root.style.display='none';toast('Campaign loaded: '+n,'info');}catch(e){alert(e.message)}};box.appendChild(b);});
+    add('JOIN A HOST SESSION',()=>{const id=prompt('Enter the host session ID');if(!id||!id.trim())return;const nm=prompt('Your player name',lsGet('vnd.mp.name')||'Player')||'Player';root.style.display='none';mpJoin(id.trim(),nm,mpSrvSetting());});
+    add('RETURN TO GAME',()=>{root.style.display='none';});
+    const note=document.createElement('p');note.textContent='The host owns campaign saves, Codex authority, checkpoint adjudication and Super Event controls. Players joining a session receive the host campaign state.';note.style.cssText='font-size:11px;opacity:.7;line-height:1.5';box.appendChild(note);root.appendChild(box);root.style.display='flex';
+  }
+
+  const _codexEntries=codexEntries;
+  codexEntries=function(){return _codexEntries().filter(p=>vndHost()||!!(S.codexReveals&&S.codexReveals[p.id]));};
+  const _buildTabs=buildTabs;
+  buildTabs=function(){_buildTabs();[['notes','NOTES'],['journal','JOURNAL'],['holotapes','HOLOTAPES'],['checkpoint','CHECKPOINT'],['events','SUPER EVENTS'],['authority','CODEX AUTH']].forEach(([k,l])=>$('#tabs').appendChild(h('button',{class:'btn','data-k':k,text:l,onclick:()=>setTab(k)})));};
+  const _renderTab=renderTab;
+  renderTab=function(){if(['notes','journal','holotapes','checkpoint','events','authority'].includes(ui.tab)){const body=$('#tabBody'),keep=body.scrollTop;body.innerHTML='';({notes:vndRenderNotes,journal:vndRenderJournal,holotapes:vndRenderHolotapes,checkpoint:vndRenderCheckpoint,events:vndRenderSuperEvents,authority:vndRenderCodexAuthority})[ui.tab](body);body.scrollTop=keep;return;}_renderTab();};
+  const _tabSignature=tabSignature;
+  tabSignature=function(){if(['notes','journal','holotapes','checkpoint','events','authority'].includes(ui.tab))return JSON.stringify([ui.tab,(S.notes||[]).map(x=>[x.id,x.updated,x.text]),(S.journal||[]).map(x=>[x.id,x.text]),(S.holotapes||[]).map(x=>x.id),(S.superEvents||[]).map(x=>x.id),S.checkpoint&&S.checkpoint.pending,MP.role]);return _tabSignature();};
+
+  const _hostOnMsg=hostOnMsg;
+  hostOnMsg=function(conn,msg){
+    if(msg&&msg.t==='campaign'){
+      const pub=conn&&conn._pub,pl=pub&&MP.players[pub];if(!pl||!pl.online)return;
+      const e=msg.entry||{};
+      if(msg.act==='noteAdd'){
+        const title=String(e.title||'Untitled note').slice(0,100),body=String(e.text||'').slice(0,5000);if(!title&&!body)return;
+        S.notes.unshift({id:vndId(),title,text:body,visibility:'party',created:S.t,updated:S.t,author:pl.name,authorPub:pub});vndAudit(`${pl.name} added campaign note: ${title}`);
+      }else if(msg.act==='noteEdit'||msg.act==='noteDelete'){
+        const note=S.notes.find(x=>x.id===msg.id);if(!note||note.authorPub!==pub)return;
+        if(msg.act==='noteEdit'){note.title=String(e.title||note.title).slice(0,100);note.text=String(e.text||'').slice(0,5000);note.updated=S.t;vndAudit(`${pl.name} edited campaign note: ${note.title}`);}
+        else{S.notes=S.notes.filter(x=>x.id!==note.id);vndAudit(`${pl.name} deleted their campaign note: ${note.title}`);}
+      }else if(msg.act==='journalAdd'){
+        const title=String(e.title||'Field report').slice(0,100),body=String(e.text||'').slice(0,5000);if(!body)return;
+        S.journal.unshift({id:vndId(),title,text:body,kind:String(e.kind||'event').slice(0,30),t:S.t,author:pl.name,authorPub:pub});addLog('quest',`${pl.name} added journal entry: ${title}`);
+      }else return;
+      mpSyncSoon();markDirty();autosave();return;
+    }
+    _hostOnMsg(conn,msg);
+  };
+  // Host-created Super Events are carried in the normal authoritative state stream.
+  const _clientOnMsg=clientOnMsg;
+  clientOnMsg=function(msg){const before=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id, tapes=S&&S.holotapes?S.holotapes.length:0;_clientOnMsg(msg);if(msg&&msg.t==='state'){const after=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id;if(after&&after!==before)setTimeout(vndSuperEventPoll,120);if(S.holotapes&&S.holotapes.length>tapes&&S.holotapes[0].unlocked!==false)toast('NEW HOLOTAPE RECEIVED: '+S.holotapes[0].title,'discover');}};
+
+  // The boot screen now leads to a real campaign menu. New-game intro starts only
+  // after the host deliberately creates a campaign; continuing does not replay it.
+  const _boot=boot;
+  boot=function(){_boot();};
+  // Keep menu reachable from the brand area and expose APIs for host tooling.
+  window.VND = Object.assign(window.VND||{}, {showMainMenu:vndRenderMainMenu,checkpointGrant:vndGrantCheckpoint,showSuperEvent:vndShowSuperEvent});
+})();
+
 document.addEventListener('DOMContentLoaded', boot);
 
 </script>
