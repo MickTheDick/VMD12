@@ -63,7 +63,9 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:8px;min-height:0
 #routeSvg{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 #pins{position:absolute;inset:0}
 .pin{position:absolute;width:0;height:0}
-.pin .pi{position:absolute;left:0;top:0;transform:translate(-50%,-50%) scale(var(--inv,1));display:flex;flex-direction:column;align-items:center;cursor:pointer}
+/* Discovery radius is drawn in map-image pixels, so it scales naturally with map zoom. */
+.pin .discovery-radius{position:absolute;left:0;top:0;transform:translate(-50%,-50%);border:1.5px dashed rgba(255,190,72,.78);border-radius:50%;background:rgba(255,190,72,.055);box-shadow:0 0 5px rgba(255,190,72,.18);pointer-events:none;z-index:0}
+.pin .pi{position:absolute;left:0;top:0;transform:translate(-50%,-50%) scale(var(--inv,1));display:flex;flex-direction:column;align-items:center;cursor:pointer;z-index:1}
 .pin svg{width:22px;height:22px;display:block;filter:drop-shadow(0 0 3px rgba(70,255,138,.9))}
 .pin .pl{position:absolute;top:16px;white-space:nowrap;font-size:11px;font-weight:bold;letter-spacing:1px;color:var(--g);text-shadow:0 0 3px #000,0 0 3px #000,0 0 6px #000;pointer-events:none}
 .pin:hover .pi{z-index:20} .pin:hover .pl{color:#fff}
@@ -208,6 +210,8 @@ body{overflow:auto}
 
 /* ---------- Game Gauntlet device frame / New Israelite OS ---------- */
 html,body{background:#050302}
+/* The campaign world stays hidden until a menu action explicitly loads it. */
+#device{visibility:hidden}
 #device{position:relative;height:100vh;display:flex;flex-direction:column;padding:2px 10px 10px;
   background:linear-gradient(90deg,#120b05,#2c2013 8%,#3a2b19 50%,#2c2013 92%,#120b05),#1b130a;box-shadow:inset 0 0 0 2px #000,inset 0 0 0 4px #5b4527}
 #device:before,#device:after{content:"";position:absolute;bottom:4px;width:9px;height:9px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#c9a46a,#4a3519 70%);box-shadow:0 1px 0 #000}
@@ -352,13 +356,13 @@ select.sm{font-size:11px;background:#06160c;color:var(--g);border:1px solid var(
 .tc-card.on{border-color:var(--a)}
 
 
-/* VND campaign introduction: static yellow text on black */
-#vndIntroRoot{position:fixed;inset:0;z-index:20000;background:#000;color:#f9d66b;display:flex;align-items:stretch;justify-content:center;overflow:hidden;font-family:"Courier New",Courier,monospace}
-#vndIntroRoot .intro-space{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;background:#000;padding:7vh 6vw 9vh}
-#vndIntroRoot .intro-crawl{position:relative;width:min(900px,100%);margin:0 auto;color:#f9d66b;font-family:"Courier New",Courier,monospace;font-size:clamp(15px,1.55vw,21px);font-weight:600;line-height:1.65;letter-spacing:.25px;text-align:left;text-shadow:none;opacity:1;transform:none;animation:none}
-#vndIntroRoot .intro-crawl p{margin:0 0 1.15em}
-#vndIntroRoot .intro-skip{position:sticky;top:0;z-index:3;margin:0 auto 22px;width:max-content;max-width:100%;padding:7px 12px;border:1px solid #9d823b;background:#000;color:#f9d66b;font:12px "Courier New",monospace;letter-spacing:1px;text-align:center}
-@media(max-width:600px){#vndIntroRoot .intro-space{padding:5vh 6vw 8vh}#vndIntroRoot .intro-crawl{font-size:15px;line-height:1.55}}
+/* VND campaign introduction: sequential readable paragraph fades, no movement */
+#vndIntroRoot{position:fixed;inset:0;z-index:20000;background:#000;color:#f9d66b;display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:"Courier New",Courier,monospace}
+#vndIntroRoot .intro-space{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;padding:6vh 7vw}
+#vndIntroRoot .intro-crawl{position:relative;width:min(900px,86vw);max-height:82vh;margin:0;padding:0;color:#f9d66b;font-family:"Courier New",Courier,monospace;font-size:clamp(17px,1.55vw,22px);font-weight:600;line-height:1.65;letter-spacing:.2px;text-align:center;text-shadow:none;opacity:1;transform:none;display:flex;align-items:center;justify-content:center;overflow:visible}
+#vndIntroRoot .intro-crawl p{display:none;width:100%;max-height:82vh;overflow-y:auto;margin:0;padding:12px 8px;white-space:pre-wrap;overflow-wrap:anywhere;opacity:0;transition:opacity 900ms ease-in-out}
+#vndIntroRoot .intro-skip{display:none}
+@media(max-width:600px){#vndIntroRoot .intro-space{padding:5vh 7vw}#vndIntroRoot .intro-crawl{width:86vw;font-size:16px;line-height:1.6}}
 
 </style>
 </head>
@@ -422,6 +426,7 @@ const WALK_MPH = 3;                         // base walking speed
 const VEHICLE_MPH = 30;                     // base vehicle speed on wasteland roads
 const FUEL_MI_PER_CELL = 5;                 // vehicle range per fuel cell
 const NEAR_RADIUS_MI = 10;                  // within this many miles the party is "at / near" a location
+const DEFAULT_DISCOVERY_RADIUS_MI = 8;       // undiscovered locations are revealed when the party enters this radius
 const SIM_START = { y: 2296, mo: 11, d: 23, h: 11, mi: 25 };   // Tue Dec 23 2296 11:25 AM
 const EPOCH_MIN = Date.UTC(SIM_START.y, SIM_START.mo, SIM_START.d, SIM_START.h, SIM_START.mi) / 60000;
 // The brief fixes Dec 23 2296 as a TUESDAY; the proleptic Gregorian calendar says Wednesday,
@@ -1227,11 +1232,18 @@ function arrive() {
   if (typeof onArrive === 'function') onArrive(dest);
 }
 function passByDiscovery() {
-  const vis = visibility(), r = 12 * vis;
+  // Every undiscovered world location has a proximity trigger. The default is
+  // eight map miles, but a pin may override it with its own discoverRadiusMi.
+  // Discovery is deterministic: entering the radius always reveals the pin.
   WORLD_LOCS.forEach(p => {
     if (S.discovered[p.id]) return;
-    const dd = milesBetween(S.pos, p);
-    if ((dd <= Math.min(4, r) || (dd <= r && rand() < 0.35))) discoverPin(p.id, `spotted from the road (${WX[curWeather().state].name}, visibility ${Math.round(vis * 100)}%)`);
+    const radius = Number.isFinite(+p.discoverRadiusMi) && +p.discoverRadiusMi > 0
+      ? +p.discoverRadiusMi
+      : DEFAULT_DISCOVERY_RADIUS_MI;
+    const distance = milesBetween(S.pos, p);
+    if (distance <= radius) {
+      discoverPin(p.id, `the party came within ${radius} miles`);
+    }
   });
 }
 function applyDetour(miles) {
@@ -3316,9 +3328,55 @@ function hostOnMsg(conn, msg) {
     conn._pub = pub;
     Object.values(S.assign).forEach(a => { if (a.pub === pub) a.name = name; });
     Object.values(S.qvotes).forEach(v => { }); if (S.qvotes[pub]) S.qvotes[pub].name = name;
+    // A player's character is campaign-authoritative once imported. Rejoining the
+    // same campaign finds the existing member by persistentId instead of cloning it.
+    const incoming = msg.character;
+    let character = null, persistentId = null;
+    const builtinNames = { rodney: 'Rodney', rob: 'Rob', el_runto: 'El Runto' };
+    if (incoming && incoming.builtinKey && builtinNames[incoming.builtinKey]) {
+      // Built-in cast choices select the campaign's existing party member, rather
+      // than importing a duplicate copy of that character.
+      const wanted = builtinNames[incoming.builtinKey].toLowerCase();
+      character = S.party.concat(S.bench || []).find(m => String(m.name || '').toLowerCase() === wanted || (wanted === 'rob' && /^rob hall$/i.test(m.rpg && m.rpg.name || m.name || '')));
+      if (!character) {
+        conn.send({ t: 'kicked', reason: 'That built-in character is not present in this host campaign.' });
+        delete MP.players[pub]; setTimeout(() => { try { conn.close(); } catch (e) {} }, 250); return;
+      }
+      persistentId = 'builtin:' + incoming.builtinKey;
+    } else {
+      if (!incoming || typeof incoming.persistentId !== 'string' || !incoming.member || !incoming.member.created || !incoming.member.rpg || !incoming.member.rpg.inv) {
+        conn.send({ t: 'kicked', reason: 'Choose one of your saved characters, Rodney, Rob, or El Runto before joining.' });
+        delete MP.players[pub]; setTimeout(() => { try { conn.close(); } catch (e) {} }, 250); return;
+      }
+      persistentId = incoming.persistentId.slice(0, 100);
+      character = S.party.concat(S.bench || []).find(m => m.persistentId === persistentId);
+      if (!character) {
+        const extraCount = S.party.concat(S.bench || []).filter(m => m.created).length;
+        const maxExtras = (rpgCfg() && rpgCfg().maxExtraPCs) || 3;
+        if (extraCount >= maxExtras) {
+          conn.send({ t: 'kicked', reason: 'This campaign has no remaining player-character slots.' });
+          delete MP.players[pub]; setTimeout(() => { try { conn.close(); } catch (e) {} }, 250); return;
+        }
+        character = JSON.parse(JSON.stringify(incoming.member));
+        character.id = 'pc_' + rid(12); character.persistentId = persistentId;
+        character.kind = 'pc'; character.created = true;
+        character.name = cleanName(character.name) || name;
+        if (!Array.isArray(character.rpg.inv.items)) character.rpg.inv.items = [];
+        if (!character.rpg.inv.eq) character.rpg.inv.eq = { main: null, off: null, armor: null, helmet: null, under: null };
+        if (S.party.length < 6) S.party.push(character); else { S.bench = S.bench || []; S.bench.push(character); }
+        addLog('system', `${character.name} joined the campaign as ${name}'s saved character.`);
+      }
+    }
+    const currentOwner = S.assign[character.id];
+    if (currentOwner && currentOwner.pub && currentOwner.pub !== pub && MP.players[currentOwner.pub] && MP.players[currentOwner.pub].online) {
+      conn.send({ t: 'kicked', reason: 'That character is already being played in this campaign.' });
+      delete MP.players[pub]; setTimeout(() => { try { conn.close(); } catch (e) {} }, 250); return;
+    }
+    pl.characterPid = persistentId;
+    S.assign[character.id] = { pub, name };
     addLog('system', `LINK: ${name} connected.`); osNotice(`${name} joined the session`);
-    conn.send({ t: 'welcome', pub, host: hostName() });
-    mpSyncSoon(); mpRefresh(); return;
+    conn.send({ t: 'welcome', pub, host: hostName(), characterId: character.id });
+    mpSyncSoon(); markDirty(); autosave(); mpRefresh(); return;
   }
   const pub = conn._pub; if (!pub) return; const pl = MP.players[pub]; if (!pl || pl.conn !== conn) return;
   switch (msg.t) {
@@ -3395,7 +3453,7 @@ function mpJoin(id, name, srv) {
 }
 function clientConnect() {
   const conn = MP.peer.connect(MP.joinId, { reliable: true, serialization: 'binary' }); MP.conn = conn;
-  conn.on('open', () => { conn.send({ t: 'hello', cid: myCid(), name: MP.joinName }); });
+  conn.on('open', () => { const pick=MP.localCharacter; conn.send({ t: 'hello', cid: myCid(), name: MP.joinName, character: pick ? (pick.builtinKey ? { builtinKey: pick.builtinKey } : { persistentId: pick.persistentId, member: pick.member }) : null }); });
   conn.on('data', msg => { try { clientOnMsg(msg); } catch (e) { console.error('client msg', e); window.__vndErr = (window.__vndErr || []).concat(String(e && e.stack || e)); } });
   conn.on('close', () => clientLost('Connection to the host was lost.'));
   conn.on('error', () => clientLost('Connection error.'));
@@ -3511,6 +3569,7 @@ function validateSnapshot(snap) {
   if (!st.weather.regions) throw new Error('Save has no weather data.');
 }
 function applySnapshot(snap) {
+  window.__vndGameStarted = true;
   if (isClient()) throw new Error('Only the host can load or import saves.');
   validateSnapshot(snap);
   const st = migrateSave(snap);
@@ -3525,7 +3584,7 @@ function applySnapshot(snap) {
   // Loading or continuing a save does not replay the campaign introduction.
 }
 function autosave() {
-  if (!S || isClient()) return;
+  if (!window.__vndGameStarted || !S || isClient()) return false;
   const ok = lsSet(LS_AUTO, JSON.stringify(makeSnapshot('Autosave')));
   ui.lastAutosave = Date.now(); ui.dirty = false; ui.saveFlash = true;
   return ok;
@@ -3670,8 +3729,16 @@ function refreshMapPins() {
   PINS.forEach(p => {
     if (!isLoc(p) || p.mapId !== S.mapView || !isVisible(p)) return;
     const ghost = !S.discovered[p.id];
-    const el = h('div', { class: 'pin' + (p.id === S.sel ? ' sel' : '') + (ghost ? ' ghost' : '') + (p.status === 'destroyed' ? ' destroyed' : '') + (p.status === 'active' ? ' active' : '') + (p.submapId ? ' sub' : ''), 'data-id': p.id, style: { left: (p.x * 100) + '%', top: (p.y * 100) + '%' } },
-      h('div', { class: 'pi', html: pinSvg(p, { destroyed: p.status === 'destroyed', sel: p.id === S.sel, ghost, visited: !!S.visited[p.id] }) + '<span class="pl"></span>' }));
+    const el = h('div', { class: 'pin' + (p.id === S.sel ? ' sel' : '') + (ghost ? ' ghost' : '') + (p.status === 'destroyed' ? ' destroyed' : '') + (p.status === 'active' ? ' active' : '') + (p.submapId ? ' sub' : ''), 'data-id': p.id, style: { left: (p.x * 100) + '%', top: (p.y * 100) + '%' } });
+    // Show the same discovery boundary around every already-discovered world location.
+    // The circle is omitted on local maps because their coordinate scale is different.
+    if (!ghost && S.mapView === WORLD_MAP_ID && WORLD_LOCS.includes(p)) {
+      const radiusMi = Number.isFinite(+p.discoverRadiusMi) && +p.discoverRadiusMi > 0
+        ? +p.discoverRadiusMi : DEFAULT_DISCOVERY_RADIUS_MI;
+      const diameterPx = 2 * radiusMi * ui.imgW / MILES_PER_MAP_WIDTH;
+      el.appendChild(h('div', { class: 'discovery-radius', title: `Discovery radius: ${radiusMi} miles`, style: { width: diameterPx + 'px', height: diameterPx + 'px' } }));
+    }
+    el.appendChild(h('div', { class: 'pi', html: pinSvg(p, { destroyed: p.status === 'destroyed', sel: p.id === S.sel, ghost, visited: !!S.visited[p.id] }) + '<span class="pl"></span>' }));
     $('.pl', el).textContent = p.name + (ghost ? ' (?)' : '');
     el.addEventListener('click', e => { e.stopPropagation(); if (ui.moved) return; selectPin(p.id); });
     el.title = p.name + (isLoc(p) && p.mapId === WORLD_MAP_ID ? ' — ' + Math.round(milesBetween(S.pos, p)) + ' mi' : '');
@@ -5118,7 +5185,7 @@ function openCreator() {
   if (extras >= cfg.maxExtraPCs) { toast('All three extra player slots are taken.', 'warn'); return; }
   ui.cr = { d: crNewDraft(), step: 0, done: {}, sent: false, msg: '' }; renderCreator();
 }
-function closeCreator() { ui.cr = null; const r = $('#creatorRoot'); if (r) { r.classList.remove('on'); r.innerHTML = ''; } }
+function closeCreator() { const wasMenu=!!window.__vndMenuCharacterMode; if(wasMenu){window.__vndMenuCharacterMode=false;if(Object.prototype.hasOwnProperty.call(window,'__vndMenuPriorState')){S=window.__vndMenuPriorState;delete window.__vndMenuPriorState;}} ui.cr = null; const r = $('#creatorRoot'); if (r) { r.classList.remove('on'); r.innerHTML = ''; } if(wasMenu){vndRenderMainMenu('main');} }
 function crRoot() { let r = $('#creatorRoot'); if (!r) { r = h('div', { id: 'creatorRoot' }); document.body.appendChild(r); } return r; }
 function crSet(fn) { fn(ui.cr.d); renderCreator(); }
 function crAdvance() {
@@ -5143,7 +5210,7 @@ function renderCreator() {
     h('button', { class: 'btn', text: 'START OVER', onclick: () => confirmBox('Start over', 'Throw away this draft and begin again?', () => { ui.cr = { d: crNewDraft(), step: 0, done: {}, sent: false, msg: '' }; renderCreator(); }, 'START OVER') }),
     canBack ? h('button', { class: 'btn', text: '◀ BACK', disabled: cr.step === 0, onclick: crBack }) : h('span', { class: 'dim', text: 'Rule: once a step is finished it cannot be changed (host can allow Back in Overseer settings).' }),
     cr.msg ? h('span', { class: 'amber', text: cr.msg }) : null, h('span', { style: { flex: 1 } }),
-    st === 'review' ? h('button', { class: 'btn grn', text: cr.sent ? 'WAITING FOR HOST…' : 'CONFIRM & CREATE CHARACTER', disabled: !okNow || cr.sent, onclick: crSubmit }) : h('button', { class: 'btn grn', text: 'LOCK IN & CONTINUE ▶', disabled: !okNow, onclick: crAdvance }));
+    st === 'review' ? h('button', { class: 'btn grn', text: cr.sent ? 'WAITING FOR HOST…' : (window.__vndMenuCharacterMode ? 'SAVE CHARACTER & RETURN TO MAIN MENU' : 'CONFIRM & CREATE CHARACTER'), disabled: !okNow || cr.sent, onclick: crSubmit }) : h('button', { class: 'btn grn', text: 'LOCK IN & CONTINUE ▶', disabled: !okNow, onclick: crAdvance }));
   root.innerHTML = ''; root.appendChild(h('div', { class: 'creator' }, h('div', { class: 'cr-head' }, h('b', { text: 'VND CHARACTER CREATOR' }), h('span', { class: 'dim', text: 'Player’s Guide · Character Creation Steps 1-10 · Made by MickTheDick' }), h('button', { class: 'btn sm', text: 'CLOSE ✕', onclick: closeCreator })), steps,
     h('div', { class: 'cr-body' }, main, crPreview(d, c)), foot));
   root.classList.add('on'); const nm = $('.cr-main', root); if (nm) nm.scrollTop = sc;
@@ -6902,6 +6969,12 @@ function musApeActive(m) { const s = rpgOf(m).status && rpgOf(m).status.c_apeshi
 function musCandidates() {
   const M = musS(), c = [], add = (key, why, o) => c.push(Object.assign({ key, why }, o || {}));
   if (M.override && M.override.track && MUS_SLUG[M.override.track]) return [{ key: 'override', list: [M.override.track], why: 'Host override', fixed: true }];
+  // The title menu has its own fixed theme. It takes priority over the
+  // normal wasteland ambience and stops automatically when the menu closes.
+  const mainMenu = document.getElementById('vndMainMenu');
+  if (mainMenu && mainMenu.isConnected && getComputedStyle(mainMenu).display !== 'none') {
+    add('main_menu', 'Main menu', { list: ['Texas Wasteland 4'], fixed: true });
+  }
   const boot = document.getElementById('bootRoot'); if (boot && boot.classList.contains('on')) add('boot', 'Title screen');
   const T = (typeof tacT === 'function') ? tacT() : null;
   if (S.ended || (T && T.result === 'defeat') || (S.party && S.party.length && S.party.every(m => rpgOf(m).dead))) add('end', 'Game over');
@@ -6951,8 +7024,25 @@ function musResolve() {
 }
 /* travelling alternates the travel theme with ambient wasteland tracks */
 function musTick(force) {
-  if (typeof S === 'undefined' || !S || !S.party) return;
   const now = Date.now(); if (!force && now - MUS.lastTick < 400) return; MUS.lastTick = now;
+  // The title menu is intentionally shown before a campaign exists (S is null).
+  // Handle it before campaign-dependent context resolution so its theme can play.
+  const menu = document.getElementById('vndMainMenu');
+  if (menu && menu.isConnected && getComputedStyle(menu).display !== 'none') {
+    if (MUS.key !== 'main_menu' || !MUS.cur || MUS.cur._dead) {
+      musPlay('Texas Wasteland 4', 'main_menu', 'Main menu');
+    }
+    return;
+  }
+  // No campaign is active while the intro is playing or before a menu choice.
+  // Fade out any menu music and wait for a real campaign state.
+  if (typeof S === 'undefined' || !S || !S.party) {
+    if (MUS.key === 'main_menu' && MUS.cur) {
+      MUS.cur._dir = -1; MUS.cur._ms = 900; musStartFade();
+      MUS.cur = null; MUS.key = null; MUS.title = null; musPanelSync();
+    }
+    return;
+  }
   let ctx; try { ctx = musResolve(); } catch (e) { return; }
   if (!ctx) { if (MUS.cur) { MUS.cur._dir = -1; musStartFade(); MUS.cur = null; MUS.key = null; MUS.title = null; musPanelSync(); } return; }
   const over = ctx.key === 'override', changed = ctx.key !== MUS.key || ((over || ctx.once) && MUS.title !== ctx.list[0]);
@@ -7807,7 +7897,7 @@ function renderTacHost(side, T) {
 
 /* =====================================================================
    CAMPAIGN INTRO — first new game / first join per player and campaign
-   Uses the canonical Episode II crawl from the Gauntlet specification.
+   Uses a plain-text campaign briefing, not a cinematic Star Wars crawl.
    The viewed marker is local to each player and campaign; save loads do
    not replay it once that player has completed it.
    ===================================================================== */
@@ -7832,73 +7922,80 @@ function maybeShowCampaignIntro(reason) {
   const key = introSeenKey(); if (lsGet(key) === '1') return false;
   showCampaignIntro(key, reason || 'new-game'); return true;
 }
-function showCampaignIntro(seenKey, reason) {
+function showCampaignIntro(seenKey, reason, onComplete) {
   const root = document.createElement('div'); root.id = 'vndIntroRoot';
   const space = document.createElement('div'); space.className = 'intro-space';
-  const skip = document.createElement('div'); skip.className = 'intro-skip';
-  skip.textContent = 'HOLD ANY KEY TO SKIP';
-  const crawl = document.createElement('div'); crawl.className = 'intro-crawl';
-  VND_CANONICAL_CRAWL.split('\n').forEach(line => {
-    const p = document.createElement('p');
-    p.textContent = line || '\u00a0';
-    crawl.appendChild(p);
+  const panel = document.createElement('div'); panel.className = 'intro-crawl';
+  const paragraphs = VND_CANONICAL_CRAWL.split(/\n\s*\n/).map(t => t.trim()).filter(Boolean);
+  const paragraphNodes = paragraphs.map(text => {
+    const p = document.createElement('p'); p.textContent = text; panel.appendChild(p); return p;
   });
-  space.append(skip, crawl); root.appendChild(space); document.body.appendChild(root);
+  space.appendChild(panel); root.appendChild(space); document.body.appendChild(root);
 
-  let audio = null, finished = false, audioSources = [], audioSourceIndex = 0;
+  let audio = null, finished = false, timer = 0, audioSources = [], audioSourceIndex = 0;
+  let paragraphIndex = 0;
+  const FADE_MS = 900;
   const complete = () => {
     if (finished) return;
-    finished = true;
+    finished = true; if (timer) clearTimeout(timer);
     try { if (audio) { audio.pause(); audio.currentTime = 0; } } catch (e) {}
     try { if (typeof MUS !== 'undefined') { MUS.els.forEach(e => { try { e.pause(); } catch (x) {} }); musTick(true); } } catch (e) {}
     document.removeEventListener('keydown', skipOnKey, true);
-    lsSet(seenKey, '1');
-    root.remove();
-    if (!isClient()) {
-      addLog('system', 'Campaign introduction completed for ' + introPlayerKey() + '.');
-      markDirty(); autosave();
-    }
+    if (seenKey) lsSet(seenKey, '1'); root.remove();
+    if (S && !isClient()) { addLog('system', 'Campaign introduction completed for ' + introPlayerKey() + '.'); markDirty(); autosave(); }
+    if (typeof onComplete === 'function') onComplete();
   };
   const skipOnKey = e => {
     if (!root.isConnected || finished) return;
-    e.preventDefault();
-    e.stopPropagation();
-    complete();
+    e.preventDefault(); e.stopPropagation(); complete();
   };
-  // A keydown fires as soon as a key is held; key-repeat is also accepted.
   document.addEventListener('keydown', skipOnKey, true);
+
+  // Each paragraph is shown alone, centered on a stationary black screen.
+  // Reading time scales with word count (about 190 words per minute), with
+  // a minimum hold. There is deliberately no transform, scrolling, or crawl.
+  const showNextParagraph = () => {
+    if (finished || !root.isConnected) return;
+    if (paragraphIndex >= paragraphNodes.length) { complete(); return; }
+    const p = paragraphNodes[paragraphIndex++];
+    // Keep hidden paragraphs out of layout so the active paragraph stays centered.
+    p.style.display = 'block';
+    p.style.opacity = '0';
+    requestAnimationFrame(() => {
+      if (finished || !root.isConnected) return;
+      p.style.opacity = '1';
+      const words = (p.textContent.match(/\\S+/g) || []).length;
+      const readableMs = Math.max(6500, Math.ceil(words / 3.15 * 1000));
+      timer = setTimeout(() => {
+        p.style.opacity = '0';
+        timer = setTimeout(() => {
+          p.style.display = 'none';
+          showNextParagraph();
+        }, FADE_MS);
+      }, readableMs + FADE_MS);
+    });
+  };
 
   const startAudio = () => {
     try {
-      if (typeof MUS !== 'undefined') MUS.els.forEach(e => { try { e.pause(); } catch (x) {} });
+      if (typeof MUS !== 'undefined' && MUS.els) MUS.els.forEach(e => { try { e.pause(); } catch (x) {} });
       audioSources = [
-        'music/The%20war%20never%20changes.mp3',
-        MUS_ABS + 'The%20war%20never%20changes.mp3',
-        'music/war-war-never-changes.mp3',
-        MUS_ABS + 'war-war-never-changes.mp3'
+        (typeof MUS_ABS !== 'undefined' ? MUS_ABS : '') + 'war-war-never-changes.mp3',
+        'music/war-war-never-changes.mp3'
       ];
-      audio = new Audio();
-      audio.preload = 'auto';
-      audio.volume = MUS.mute ? 0 : MUS.vol;
+      audio = new Audio(); audio.preload = 'auto';
+      audio.volume = (typeof MUS !== 'undefined' && MUS.mute) ? 0 : ((typeof MUS !== 'undefined' && Number.isFinite(MUS.vol)) ? MUS.vol : 0.7);
       audio.addEventListener('error', () => {
         if (audioSourceIndex < audioSources.length - 1) {
-          audioSourceIndex++;
-          audio.src = audioSources[audioSourceIndex];
-          audio.load();
-          audio.play().catch(() => {});
+          audioSourceIndex++; audio.src = audioSources[audioSourceIndex]; audio.load(); audio.play().catch(() => {});
         }
       });
-      audio.addEventListener('ended', complete);
-      audio.src = audioSources[0];
-      audio.play().catch(() => {
-        // Browsers may block autoplay after a network join; the text remains readable.
-      });
+      audio.src = audioSources[0]; audio.load(); audio.play().catch(() => {});
     } catch (e) {}
   };
+  showNextParagraph();
   startAudio();
   if (!isClient()) addLog('system', 'Campaign introduction started (' + (reason || 'new game') + ').');
-  // Fallback for missing audio: leave the text visible long enough to read.
-  setTimeout(() => { if (!finished && (!audio || audio.error)) complete(); }, 120000);
 }
 
 /* =====================================================================
@@ -7917,6 +8014,7 @@ function fullRefresh() {
   updateHud(true); updateTravelBar(); updateStatusStrip(); updatePartyStrip(); updateActionBar(); updatePartyMarker(); updateRoute(); renderTab();
 }
 function doNewGame() {
+  window.__vndGameStarted = true;
   newState(true);
   afterStateReplaced();
   centerOn(S.pos.x, S.pos.y);
@@ -7925,16 +8023,20 @@ function doNewGame() {
 function frame(ts) {
   const dtReal = Math.min(0.25, (ts - lastTs) / 1000 || 0.016); lastTs = ts;
   try {
-    if (!isClient() && isRunning()) {
-      simTick(SIM_RATES[S.settings.speedIdx] * dtReal);
-      if (!S.pending) afterTick(false);
+    // The title screen is a true pre-game state: no simulation, UI refresh,
+    // multiplayer tick, or save operation runs until the player chooses.
+    if (window.__vndGameStarted && S) {
+      if (!isClient() && isRunning()) {
+        simTick(SIM_RATES[S.settings.speedIdx] * dtReal);
+        if (!S.pending) afterTick(false);
+      }
+      syncPendingUi();
+      mpTick(ts);
+      updateMapFx(dtReal);
+      if (ts - lastUiSlow > 150) { lastUiSlow = ts; slowUi(); }
+      if (ui.travelPendingRefresh) { ui.travelPendingRefresh = false; }
+      updateHudFast();
     }
-    syncPendingUi();
-    mpTick(ts);
-    updateMapFx(dtReal);
-    if (ts - lastUiSlow > 150) { lastUiSlow = ts; slowUi(); }
-    if (ui.travelPendingRefresh) { ui.travelPendingRefresh = false; }
-    updateHudFast();
   } catch (e) { console.error('frame error', e); window.__vndErr = (window.__vndErr || []).concat(String(e && e.stack || e)); }
   requestAnimationFrame(frame);
 }
@@ -7962,8 +8064,10 @@ function slowUi() {
   const ind = $('#saveInd'); if (ind) setText(ind, ui.lastAutosave ? 'autosaved ' + new Date(ui.lastAutosave).toLocaleTimeString() : 'autosave: ready');
 }
 function boot() {
+  window.__vndGameStarted = false;
+  S = null;
   buildSpeedButtons(); buildActionBar(); buildTabs(); initMapInput();
-  $('#btnGM').onclick = () => { if (isClient()) return; S.settings.gm = !S.settings.gm; markDirty(); refreshMapPins(); renderTab(); updateHud(); };
+  $('#btnGM').onclick = () => { if (!S || isClient()) return; S.settings.gm = !S.settings.gm; markDirty(); refreshMapPins(); renderTab(); updateHud(); };
   $('#btnHelp').onclick = openHelp;
   $('#importFile').onchange = e => {
     const f = e.target.files[0]; if (!f) return;
@@ -7975,30 +8079,16 @@ function boot() {
     };
     rd.readAsText(f);
   };
-  let restored = false;
   const jn = parseJoinHash();
-  if (jn) { MP.role = 'client'; MP.status = 'ask'; MP.joinId = jn.id; MP.srv0 = jn.srv; document.body.classList.add('client'); $('#party').classList.add('lerp'); }
-  newState(false);                       // build a fresh state first (also seeds helpers)
-  if (!jn && loadAutosave()) restored = true;
-  setTab('travel');
-  setMapView(S.mapView, true);
-  fullRefresh();
-  if (jn) renderGate();
-  if (restored) {
-    const msg = S.travel ? 'Autosave restored — your journey is paused. Press RESUME to continue.' : 'Autosave restored.';
-    setTimeout(() => toast(msg, 'info'), 400);
-    addLog('system', 'Autosave restored.');
-  } else if (!jn) {
-    addLog('system', 'Welcome to the Texas wasteland. Select a discovered location and begin a journey.');
-    setTimeout(() => { centerOn(S.pos.x, S.pos.y, Math.max(ui.zoom, 1.5)); }, 100);
-  }
-  if (S.pending) showPending();
-  window.addEventListener('beforeunload', () => { try { autosave(); } catch (e) {} });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) autosave(); });
+  // Keep invitation details, but do not join or construct a placeholder world
+  // until the player chooses JOIN GAME from the title menu.
+  if (jn) { window.__vndPendingJoin = jn; }
+  window.addEventListener('beforeunload', () => { try { if (window.__vndGameStarted) autosave(); } catch (e) {} });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && window.__vndGameStarted) autosave(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && ui.modalOpen) closeModal(); });
   window.addEventListener('error', e => { window.__vndErr = (window.__vndErr || []).concat(String(e.message)); });
   requestAnimationFrame(t => { lastTs = t; requestAnimationFrame(frame); });
-  bootScreen(() => { window.__vndReady = true; if (!isClient() && typeof vndRenderMainMenu === 'function') setTimeout(() => vndRenderMainMenu(), 180); });
+  const splash = $('#bootRoot'); if (splash) splash.remove(); window.__vndReady = true; if (typeof vndRenderMainMenu === 'function') requestAnimationFrame(() => vndRenderMainMenu('main'));
 }
 window.VND = {
   get S() { return S; }, simTick, startTravel, startActivity, triggerEncounter, triggerEvent, chooseOption, closePending, applySnapshot, makeSnapshot, saveSlot, loadSlot, getSlots,
@@ -8154,54 +8244,165 @@ window.VND = {
     entries.forEach(p=>{const visible=!!S.codexReveals[p.id];body.appendChild(h('div',{class:'cod'},h('span',{text:p.name}),h('span',{class:'ty',text:visible?'REVEALED':'HIDDEN'}),vndHost()?h('button',{class:'btn sm',text:visible?'HIDE':'REVEAL',onclick:()=>{if(visible)delete S.codexReveals[p.id];else S.codexReveals[p.id]=true;vndAudit(`Codex entry ${visible?'hidden':'revealed'}: ${p.name}`);vndSave();renderTab();}}):null));});
   }
 
-  function vndRenderMainMenu(){
-    let root=document.getElementById('vndMainMenu');
-    if(!root){
-      root=document.createElement('div');root.id='vndMainMenu';
-      root.style.cssText='position:fixed;inset:0;z-index:18000;background:#000;display:none;align-items:center;justify-content:center;padding:18px;color:#f9d66b;font-family:Courier New,monospace;';
-      document.body.appendChild(root);
-    }
-    root.innerHTML='';
-    const box=document.createElement('div');
-    box.style.cssText='width:min(560px,94vw);border:2px solid #9d823b;background:#000;padding:28px;box-shadow:0 0 28px rgba(249,214,107,.12);';
-    const title=document.createElement('h1');
-    title.textContent='VAULTS & DEATHCLAWS';
-    title.style.cssText='color:#f9d66b;letter-spacing:3px;text-align:center;font-size:clamp(20px,4vw,30px);margin:0 0 28px;';
-    box.appendChild(title);
-    const add=(label,fn)=>{
-      const b=document.createElement('button');b.className='btn';b.textContent=label;
-      b.style.cssText='display:block;width:100%;margin:12px 0;padding:15px;background:#080704;color:#f9d66b;border:1px solid #9d823b;font-size:15px;letter-spacing:2px;';
-      b.onclick=fn;box.appendChild(b);
-    };
-    add('CONTINUE AS HOST',()=>{
-      root.style.display='none';
-      if(isClient()){try{mpLeave();}catch(e){}return;}
-      if(!lsGet(LS_AUTO)){
-        if(!confirm('No host autosave was found. Start a new campaign instead?')){root.style.display='flex';return;}
-        doNewGame();
-      }else{
-        MP.role='host';
-        toast('Continuing campaign as host','info');
-      }
-    });
-    add('START A NEW GAME',()=>{
-      if(!confirm('Start a new campaign? The existing named campaign saves will be kept.'))return;
-      root.style.display='none';
-      if(MP.peer){try{MP.peer.destroy();}catch(e){}MP.peer=null;}
-      MP.role='host';MP.got=false;
-      doNewGame();
-    });
-    add('JOIN GAME',()=>{
-      const id=prompt('Enter the host session ID');
-      if(!id||!id.trim())return;
-      const nm=prompt('Your player name',lsGet('vnd.mp.name')||'Player')||'Player';
-      root.style.display='none';
-      mpJoin(id.trim(),nm,mpSrvSetting());
-    });
-    root.appendChild(box);
-    root.style.display='flex';
+  const VND_CHARACTER_KEY = 'vnd.characters.v1';
+  function vndCharacterList(){
+    try { const a=JSON.parse(lsGet(VND_CHARACTER_KEY)||'[]'); return Array.isArray(a)?a.filter(x=>x&&x.persistentId&&x.member&&x.member.created):[]; }
+    catch(e){ return []; }
   }
-
+  function vndStoreCharacter(member, persistentId){
+    if(!member||!member.created||!member.rpg)return null;
+    const id=persistentId||member.persistentId||('vndchar_'+rid(14));
+    const copy=JSON.parse(JSON.stringify(member)); copy.persistentId=id;
+    const list=vndCharacterList(), rec={persistentId:id,name:copy.name||'Wastelander',member:copy,updatedAt:new Date().toISOString()};
+    const i=list.findIndex(x=>x.persistentId===id); if(i>=0)list[i]=rec;else list.push(rec);
+    lsSet(VND_CHARACTER_KEY,JSON.stringify(list)); return rec;
+  }
+  function vndSaveMyCharacters(){
+    if(!isClient()||!MP.you||!S)return;
+    const ids=Array.isArray(MP.you.chars)?MP.you.chars:[];
+    ids.forEach(id=>{const m=(S.party||[]).concat(S.bench||[]).find(x=>x.id===id);if(m&&m.created&&m.persistentId)vndStoreCharacter(m,m.persistentId);});
+  }
+  function vndBeginMenuCharacterCreation(){
+    const menu=document.getElementById('vndMainMenu');
+    // The title screen intentionally has no active campaign (S is null). The
+    // Player's Guide creator reads RPG settings from S, so give it an isolated
+    // temporary state and preserve the real campaign state for restoration.
+    window.__vndMenuPriorState=S;
+    if(!S) S=newState(false);
+    ui.cr={d:crNewDraft(),step:0,done:{},sent:false,msg:''};
+    window.__vndMenuCharacterMode=true;
+    try{
+      renderCreator();
+      const creator=document.getElementById('creatorRoot');
+      if(!creator || !creator.classList.contains('on')) throw new Error('The character creator could not be opened.');
+      creator.style.zIndex='26000';
+      if(menu)menu.style.display='none';
+    }catch(e){
+      window.__vndMenuCharacterMode=false;
+      S=window.__vndMenuPriorState;delete window.__vndMenuPriorState;
+      if(menu)menu.style.display='flex';
+      const creator=document.getElementById('creatorRoot');if(creator){creator.classList.remove('on');creator.innerHTML='';}
+      alert('Could not open character creation: '+(e.message||e));
+      vndRenderMainMenu('main');
+    }
+  }
+  function vndSubmitMenuCharacter(){
+    const d=ui.cr&&ui.cr.d, prior=Object.prototype.hasOwnProperty.call(window,'__vndMenuPriorState')?window.__vndMenuPriorState:S;
+    if(!d)return;
+    let working=null;
+    try{
+      // Build the character in an isolated state. The live campaign remains untouched.
+      working=newState(false);
+      const res=crInstall(d,{host:true});
+      if(res.err){ui.cr.msg=res.err.join(' ');renderCreator();return;}
+      const made=(S.party||[]).concat(S.bench||[]).find(m=>m.id===res.id);
+      if(!made)throw new Error('The creator did not return the new character.');
+      const saved=vndStoreCharacter(made);
+      if(!saved)throw new Error('The character could not be written to this browser. Check available local storage.');
+      S=prior;
+      delete window.__vndMenuPriorState;
+      window.__vndMenuCharacterMode=false;
+      const creator=document.getElementById('creatorRoot');if(creator){creator.classList.remove('on');creator.innerHTML='';}
+      ui.cr=null;
+      window.__vndAfterMenuCharacter=null;
+      vndRenderMainMenu('main');
+      toast(saved.name+' saved. Returning to the main menu.','info');
+    }catch(e){
+      // Keep the temporary creator state alive so its error message can render;
+      // the original campaign state is still safely held in __vndMenuPriorState.
+      if(working)S=working;
+      if(ui.cr){ui.cr.msg='Could not save character: '+(e.message||e);renderCreator();}
+      else {S=prior;delete window.__vndMenuPriorState;window.__vndMenuCharacterMode=false;vndRenderMainMenu('main');alert('Could not save character: '+(e.message||e));}
+    }
+  }
+  // The same 10-step Player's Guide creator is used in the menu and in campaigns.
+  const _vndCrSubmit=crSubmit;
+  crSubmit=function(){if(window.__vndMenuCharacterMode){vndSubmitMenuCharacter();return;}_vndCrSubmit();};
+  function vndRenderMainMenu(view){
+    view=view||'main';
+    let root=document.getElementById('vndMainMenu');
+    if(!root){root=document.createElement('div');root.id='vndMainMenu';document.body.appendChild(root);}
+    root.innerHTML='';
+    const gameDevice=document.getElementById('device');if(gameDevice)gameDevice.style.visibility='hidden';
+    root.style.cssText='position:fixed;inset:0;z-index:25000;display:flex;align-items:center;justify-content:center;overflow:auto;padding:24px;background:radial-gradient(ellipse at 50% 35%,#29200e 0%,#0a0906 48%,#000 100%);color:#f9d66b;font-family:Courier New,monospace;';
+    const shell=document.createElement('div');shell.style.cssText='width:min(760px,96vw);padding:clamp(22px,5vw,52px);border:1px solid #a58a43;background:rgba(0,0,0,.94);box-shadow:0 0 0 6px #211a0b,0 0 55px #9d762733;';root.appendChild(shell);
+    const eyebrow=document.createElement('div');eyebrow.textContent='NEW ISRAELITE OPERATIONS NETWORK';eyebrow.style.cssText='text-align:center;font-size:11px;letter-spacing:4px;color:#b99a4e;margin-bottom:18px;';shell.appendChild(eyebrow);
+    const title=document.createElement('div');title.textContent='VAULTS & DEATHCLAWS';title.style.cssText='text-align:center;font-size:clamp(29px,5.2vw,48px);font-weight:bold;letter-spacing:2px;line-height:1.1;color:#f9d66b;text-shadow:0 0 18px #b78c3155;';shell.appendChild(title);
+    const rule=document.createElement('div');rule.style.cssText='height:1px;background:linear-gradient(90deg,transparent,#a58a43,transparent);margin:22px 0 18px;';shell.appendChild(rule);
+    const headings={main:'MAIN MENU',saves:'SELECT A CAMPAIGN',characters:'CHARACTER LIBRARY',joinchars:'CHOOSE YOUR CHARACTER'};
+    const sub=document.createElement('div');sub.textContent=headings[view]||'MAIN MENU';sub.style.cssText='text-align:center;font-size:13px;letter-spacing:3px;color:#d7bd75;margin-bottom:25px;';shell.appendChild(sub);
+    const add=(label,fn,secondary)=>{const b=document.createElement('button');b.type='button';b.textContent=label;b.style.cssText='display:block;width:min(480px,100%);margin:13px auto;padding:17px 18px;background:#100d06;color:#f9d66b;border:1px solid #927638;font:bold 15px Courier New,monospace;letter-spacing:2px;cursor:pointer;transition:background .15s,border-color .15s,transform .15s;';if(secondary)b.style.cssText+='font-size:12px;color:#cbb36f;border-color:#594923;';b.onmouseenter=()=>{b.style.background='#30240d';b.style.borderColor='#f9d66b';b.style.transform='translateY(-1px)';};b.onmouseleave=()=>{b.style.background='#100d06';b.style.borderColor=secondary?'#594923':'#927638';b.style.transform='none';};b.onclick=fn;shell.appendChild(b);return b;};
+    const desc=t=>{const d=document.createElement('div');d.textContent=t;d.style.cssText='max-width:540px;margin:0 auto 18px;text-align:center;color:#bda86e;font-size:12px;line-height:1.6;';shell.appendChild(d);};
+    if(view==='saves'){
+      const slots=getSlots(),names=Object.keys(slots).sort((a,b)=>a.localeCompare(b)),auto=lsGet(LS_AUTO);
+      desc('Choose the exact campaign you want to load. Nothing is loaded until you select it.');
+      const addSave=(label,loadFn,detail)=>{const b=add(label,loadFn);if(detail){const d=document.createElement('div');d.textContent=detail;d.style.cssText='text-align:center;color:#9f8c59;font-size:11px;margin:-7px auto 12px;';b.insertAdjacentElement('afterend',d);}return b;};
+      if(auto)addSave('LOAD AUTOSAVE',()=>{try{const snap=JSON.parse(auto);if(gameDevice)gameDevice.style.visibility='visible';applySnapshot(snap);MP.role='host';MP.got=false;root.remove();setTab('travel');centerOn(S.pos.x,S.pos.y,Math.max(ui.zoom,1.5));toast('Autosave loaded.','info');}catch(e){alert('Could not load autosave: '+(e.message||e));}},'Most recently saved automatic campaign');
+      names.forEach(name=>addSave('LOAD: '+name.toUpperCase(),()=>{try{if(gameDevice)gameDevice.style.visibility='visible';if(!loadSlot(name))throw new Error('Save slot not found.');MP.role='host';MP.got=false;root.remove();setTab('travel');centerOn(S.pos.x,S.pos.y,Math.max(ui.zoom,1.5));toast('Loaded campaign: '+name,'info');}catch(e){alert('Could not load '+name+': '+(e.message||e));}},'Named campaign save'));
+      if(!auto&&!names.length)desc('NO SAVED CAMPAIGNS FOUND');
+      add('BACK TO MAIN MENU',()=>vndRenderMainMenu('main'),true);
+    }else if(view==='characters'){
+      desc('Characters are stored on this device. Their complete sheet, level, XP, inventory, equipment, health, status and other character data are updated as you play in a host campaign.');
+      add('CREATE NEW CHARACTER',vndBeginMenuCharacterCreation);
+      const chars=vndCharacterList();
+      chars.forEach(rec=>{
+        const m=rec.member, level=m.rpg&&m.rpg.level||1, info=document.createElement('div');
+        info.style.cssText='max-width:520px;margin:8px auto;padding:13px;border:1px solid #594923;background:#100d06;text-align:left;color:#d9c47e;font-size:12px;line-height:1.6;';
+        const head=document.createElement('b');head.textContent=(m.name||rec.name)+'  •  LEVEL '+level;info.appendChild(head);
+        const details=document.createElement('div');details.textContent=[m.rpg.race,m.rpg.bg,'XP '+(m.rpg.xp||0),'Saved '+new Date(rec.updatedAt||Date.now()).toLocaleString()].filter(Boolean).join('  |  ');details.style.cssText='color:#9f8c59;margin-top:4px;';info.appendChild(details);
+        const del=document.createElement('button');del.textContent='DELETE';del.style.cssText='margin-top:9px;background:#24100b;border:1px solid #70402b;color:#e2a27b;padding:6px 12px;font:bold 11px Courier New;cursor:pointer;';del.onclick=()=>{if(!confirm('Permanently delete '+(m.name||'this character')+' from this device?'))return;lsSet(VND_CHARACTER_KEY,JSON.stringify(vndCharacterList().filter(x=>x.persistentId!==rec.persistentId)));vndRenderMainMenu('characters');};info.appendChild(del);shell.appendChild(info);
+      });
+      if(!chars.length)desc('No saved characters yet. Create one to use it in multiplayer campaigns.');
+      add('BACK TO MAIN MENU',()=>vndRenderMainMenu('main'),true);
+    }else if(view==='joinchars'){
+      const chars=vndCharacterList();
+      desc('Choose one of your saved characters, or play one of the original VND characters in the host’s campaign.');
+      const choices=[];
+      {
+        const cap=document.createElement('div');cap.textContent='YOUR SAVED CHARACTERS';cap.style.cssText='text-align:center;color:#f9d66b;font-weight:bold;letter-spacing:2px;margin:12px 0 8px;';shell.appendChild(cap);
+        if(chars.length) chars.forEach(rec=>choices.push({key:'saved:'+rec.persistentId,label:(rec.member.name||rec.name)+'  •  LEVEL '+((rec.member.rpg&&rec.member.rpg.level)||1),rec}));
+        else {const empty=document.createElement('div');empty.textContent='No custom characters saved on this device yet.';empty.style.cssText='text-align:center;color:#9f8c59;font-size:12px;margin:8px 0 14px;';shell.appendChild(empty);}
+      }
+      const cap=document.createElement('div');cap.textContent='OR CHOOSE AN ORIGINAL CHARACTER';cap.style.cssText='text-align:center;color:#f9d66b;font-weight:bold;letter-spacing:2px;margin:20px 0 8px;';shell.appendChild(cap);
+      [{key:'builtin:rodney',label:'RODNEY'},{key:'builtin:rob',label:'ROB'},{key:'builtin:el_runto',label:'EL RUNTO'}].forEach(x=>choices.push({key:'builtin:'+x.key,label:x.label}));
+      let selected=choices.length?choices[0].key:null;
+      const choiceButtons=[];
+      choices.forEach(choice=>{
+        const b=add(choice.label,()=>{
+          selected=choice.key;
+          choiceButtons.forEach(x=>{const active=x.dataset.choice===selected;x.style.borderColor=active?'#f9d66b':'#594923';x.style.background=active?'#30240d':'#100d06';});
+        });
+        b.dataset.choice=choice.key;choiceButtons.push(b);
+        const active=choice.key===selected;b.style.borderColor=active?'#f9d66b':'#594923';b.style.background=active?'#30240d':'#100d06';
+      });
+      add('JOIN WITH SELECTED CHARACTER',()=>{
+        const choice=choices.find(x=>x.key===selected);if(!choice)return toast('Choose a character first.','warn');
+        const pending=window.__vndPendingJoin;const id=(pending&&pending.id)||'';if(!id)return vndRenderMainMenu('main');
+        const fallback=choice.rec?(choice.rec.member.name||choice.rec.name):({rodney:'Rodney',rob:'Rob',el_runto:'El Runto'}[choice.key.slice(7)]);
+        const nm=prompt('Player name',lsGet('vnd.mp.name')||fallback||'Player')||fallback||'Player';
+        MP.localCharacter=choice.rec?choice.rec:{builtinKey:choice.key.slice(7)};
+        root.remove();if(gameDevice)gameDevice.style.visibility='visible';newState(false);window.__vndGameStarted=true;MP.role='client';MP.status='ask';
+        if(pending){MP.joinId=pending.id;MP.srv0=pending.srv;}
+        document.body.classList.add('client');$('#party').classList.add('lerp');mpJoin(String(id).trim(),nm,mpSrvSetting());
+      });
+      add('BACK TO MAIN MENU',()=>vndRenderMainMenu('main'),true);
+    }else{
+      const tagline=document.createElement('div');tagline.textContent='THE WASTELAND IS WAITING.';tagline.style.cssText='text-align:center;color:#bda86e;font-size:12px;letter-spacing:2px;margin:-8px 0 24px;';shell.appendChild(tagline);
+      add('CONTINUE AS HOST',()=>vndRenderMainMenu('saves'));
+      add('CREATE / MANAGE CHARACTERS',()=>vndRenderMainMenu('characters'));
+      add('START A NEW GAME',()=>{
+        if(!confirm('Start a new campaign? Your existing autosave and named campaign saves will remain available until you explicitly save over them.'))return;
+        const priorAuto=lsGet(LS_AUTO);if(priorAuto){try{const saved=JSON.parse(priorAuto),slots=getSlots();let archive='Previous Autosave',n=2;while(slots[archive])archive='Previous Autosave '+(n++);saved.name=archive;slots[archive]=saved;putSlots(slots);}catch(e){console.warn('Could not archive previous autosave:',e);}}
+        if(MP.peer){try{MP.peer.destroy();}catch(e){}MP.peer=null;}MP.role='host';MP.got=false;root.remove();
+        showCampaignIntro(null,'new-game',()=>{if(gameDevice)gameDevice.style.visibility='visible';doNewGame();if(S&&S.campaignId)lsSet('vnd.intro.seen.'+S.campaignId+'.'+introPlayerKey(),'1');});
+      });
+      add('JOIN GAME',()=>{
+        const pending=window.__vndPendingJoin,id=(pending&&pending.id)||prompt('Enter the host session ID');if(!id||!String(id).trim())return;
+        window.__vndPendingJoin={id:String(id).trim(),srv:pending&&pending.srv};vndRenderMainMenu('joinchars');
+      });
+    }
+    const footer=document.createElement('div');footer.textContent='VND  •  CAMPAIGN SYSTEM';footer.style.cssText='text-align:center;color:#76643c;font-size:10px;letter-spacing:2px;margin-top:25px;';shell.appendChild(footer);
+  }
   const _codexEntries=codexEntries;
   codexEntries=function(){return _codexEntries().filter(p=>vndHost()||!!(S.codexReveals&&S.codexReveals[p.id]));};
   const _buildTabs=buildTabs;
@@ -8233,13 +8434,21 @@ window.VND = {
   };
   // Host-created Super Events are carried in the normal authoritative state stream.
   const _clientOnMsg=clientOnMsg;
-  clientOnMsg=function(msg){const before=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id, tapes=S&&S.holotapes?S.holotapes.length:0;_clientOnMsg(msg);if(msg&&msg.t==='state'){const after=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id;if(after&&after!==before)setTimeout(vndSuperEventPoll,120);if(S.holotapes&&S.holotapes.length>tapes&&S.holotapes[0].unlocked!==false)toast('NEW HOLOTAPE RECEIVED: '+S.holotapes[0].title,'discover');}};
+  clientOnMsg=function(msg){const before=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id,tapes=S&&S.holotapes?S.holotapes.length:0;_clientOnMsg(msg);if(msg&&msg.t==='state'){vndSaveMyCharacters();const after=S&&S.superEvents&&S.superEvents[0]&&S.superEvents[0].id;if(after&&after!==before)setTimeout(vndSuperEventPoll,120);if(S.holotapes&&S.holotapes.length>tapes&&S.holotapes[0].unlocked!==false)toast('NEW HOLOTAPE RECEIVED: '+S.holotapes[0].title,'discover');}};
 
   // The boot screen now leads to a real campaign menu. New-game intro starts only
   // after the host deliberately creates a campaign; continuing does not replay it.
   const _boot=boot;
-  boot=function(){_boot();};
+  boot=function(){
+    const gameDevice=document.getElementById('device');if(gameDevice)gameDevice.style.visibility='hidden';
+    // Paint the title menu first, even if some later game-world setup fails.
+    vndRenderMainMenu('main');
+    try{_boot();}catch(err){console.error('VND game initialization error:',err);window.__vndErr=(window.__vndErr||[]).concat(String(err&&err.stack||err));}
+    // Reassert the title menu after setup and keep the world hidden.
+    requestAnimationFrame(()=>{if(gameDevice)gameDevice.style.visibility='hidden';vndRenderMainMenu('main');});
+  };
   // Keep menu reachable from the brand area and expose APIs for host tooling.
+  window.vndRenderMainMenu = vndRenderMainMenu;
   window.VND = Object.assign(window.VND||{}, {showMainMenu:vndRenderMainMenu,checkpointGrant:vndGrantCheckpoint,showSuperEvent:vndShowSuperEvent});
 })();
 
