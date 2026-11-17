@@ -3792,7 +3792,7 @@ function clientLost(why) {
 }
 function clientOnMsg(msg) {
   if (!msg || typeof msg !== 'object') return;
-  if (msg.t === 'welcome') { MP.you.pub = msg.pub; MP.info.host = msg.host; MP.retry = 0; return; }
+  if (msg.t === 'welcome') { MP.you.pub = msg.pub; MP.info.host = msg.host; MP.retry = 0; try { buildTabs(); setTab('travel', true); } catch (e) {} return; }
   if (msg.t === 'toast') { toast(msg.msg, msg.kind); return; }
   if (msg.t === 'world_alert') { try { showWorldAlert(msg.alert || msg); } catch (e) {} return; }
   if (msg.t === 'kicked') { MP.status = 'kicked'; MP.err = msg.reason || 'Disconnected.'; try { MP.conn.close(); } catch (e) {} showJoinGate(false); mpRefresh(); return; }
@@ -7409,12 +7409,38 @@ function w7NemMake(o) {
 function w7NemHist(n, text) { n.history.push({ t: S.t, when: fmtDT(S.t), text }); if (n.history.length > 40) n.history.shift(); }
 function w7Grudge(n, member, d, why) { const g = n.grudges[member] || (n.grudges[member] = { score: 0, why: [] }); g.score = Math.max(0, Math.min(100, g.score + d)); if (why) { g.why.push(why); if (g.why.length > 6) g.why.shift(); } }
 const w7NemRankRx = /Captain|Commander|Commanding|Chosen|Standard-Bearer|Veteran|Elite|Leader|Boss|Overseer|Warband|Champion|Enforcer|Assassin|Templar|Elder/i;
+/* ===== Phase 10: a Nemesis changes equipment and tactics as it rises, survives and loses things ===== */
+const W7_GEAR = {
+  armor: [null, { n: 'patched leathers', dt: 1, dr: 5 }, { n: 'reinforced combat armour', dt: 2, dr: 15 }, { n: 'scavenged plate', dt: 3, dr: 25 }, { n: 'heavy plate', dt: 4, dr: 40 }],
+  weapon: [null, { n: 'a better sidearm', flat: 1 }, { n: 'a marksman rifle', flat: 3 }, { n: 'a customised weapon', flat: 5 }, { n: 'a master-crafted weapon', flat: 7 }] };
+const W7_TACTICS = { direct: 'stands and fights', cautious: 'fights from cover (+5 AC)', brutal: 'hits harder (+2 flat damage)', flanking: 'brings followers into the fight' };
+function w7NemTactic(n) {
+  const mg = Math.max(0, ...Object.values(n.grudges || {}).map(g => g.score));
+  if ((n.lost || []).length) return 'cautious'; if (n.followers >= 6) return 'flanking'; if (mg >= 60) return 'brutal'; return 'direct';
+}
+function w7NemEvolve(n, why) {
+  if (!n || n.status === 'dead') return; n.gear = Array.isArray(n.gear) ? n.gear : []; const out = [];
+  const tier = Math.min(4, Math.max(0, W7_RANK.indexOf(n.rank)) + (n.survived >= 3 ? 1 : 0));
+  ['armor', 'weapon'].forEach(slot => { const want = W7_GEAR[slot][tier]; if (!want) return; const cur = n.gear.find(g => g.slot === slot);
+    if (!cur || cur.n !== want.n) { n.gear = n.gear.filter(g => g.slot !== slot); n.gear.push(Object.assign({ slot, since: S.t }, want)); out.push(want.n); } });
+  if (out.length) w7NemHist(n, `Now has ${out.join(' and ')} (${why}).`);
+  const tc = w7NemTactic(n); if (n.tactics !== tc) { const first = !n.tactics; n.tactics = tc; if (!first || tc !== 'direct') w7NemHist(n, `Changed tactics: ${W7_TACTICS[tc]}.`); }
+}
+function w7NemApply(T, foe, n) {
+  w7NemEvolve(n, 'before this fight'); const arm = (n.gear || []).find(g => g.slot === 'armor'), wp = (n.gear || []).find(g => g.slot === 'weapon');
+  if (arm) { Object.keys(foe.dt || {}).forEach(k => { foe.dt[k] += arm.dt; }); foe.dr = (foe.dr || 0) + arm.dr; foe.maxDr = (foe.maxDr || 0) + arm.dr; }
+  if (wp) (foe.wps || []).forEach(w => { w.f = (w.f || 0) + wp.flat; });
+  if (n.tactics === 'cautious') foe.ac = (foe.ac || 0) + 5; if (n.tactics === 'brutal') (foe.wps || []).forEach(w => { w.f = (w.f || 0) + 2; });
+  let added = 0;
+  if (n.tactics === 'flanking' && typeof foeUnit === 'function' && RPG.best[foe.best]) { const k = Math.min(3, Math.floor(n.followers / 2)); for (let i = 0; i < k; i++) { const e = RPG.best[foe.best], idx = T.units.filter(x => x.side === 'foe').length + 50 + i; const u = foeUnit(e, '', idx, `${n.name}'s follower`); const c = freeCell(T, Math.max(0, (foe.x || 0) - 3), Math.min(TAC_W - 1, (foe.x || 0) + 3)); if (!c) break; u.x = c.x; u.y = c.y; u.init = d10() + u.sq; T.units.push(u); if (T.order) T.order.push(u.id); added++; } }
+  n.lastFight = { gear: (n.gear || []).map(g => g.n), tactics: n.tactics, followers: added }; return added;
+}
 function w7AfterBattle(T) {
   if (isClient() || !T || T.bs || !window.w7Started) return; const s = w7(); if (!s.enabled) return; const d = (typeof ENC !== 'undefined' && ENC[T.key]) || {}, fid = d.faction ? dirFactionId(d.faction) : ''; const members = w7Members();
   const foes = T.units.filter(u => u.side === 'foe'), downedPc = T.units.filter(u => u.side === 'pc' && (u.dead || u.com || u.uncon)).map(u => u.name);
   foes.forEach(u => { if (u.nem && s.nem[u.nem]) { const n = s.nem[u.nem]; if (u.dead) { n.status = 'dead'; w7NemHist(n, 'Killed in combat by the party.'); w7Ledger('death', `${n.name} of ${facName(n.faction)} has been killed.`, n.lastSeen ? [n.lastSeen.loc] : [], [n.faction]); w7Log('nemesis', `${n.name} was killed in battle.`); }
       else { n.survived++; n.recover = S.t + (3 + Math.floor(w7Rnd() * 6)) * 1440; if (u.hp < u.maxHp * 0.5 && w7Rnd() < 0.55) { const sc = w7Pick(['a deep scar across the face', 'a burned hand', 'a limp in the left leg', 'a missing ear', 'a crooked, broken nose']); n.scars.push(sc); if (/missing|burned/.test(sc) && w7Rnd() < 0.4) n.lost.push(sc.replace(/^a /, '')); w7NemHist(n, 'Survived another fight and now has ' + sc + '.'); }
-        members.forEach(m => w7Grudge(n, m, 10, 'survived another clash')); n.lastSeen = { loc: nearestPinId(), t: S.t }; w7Log('nemesis', `${n.name} survived the fight and is more bitter.`); } return; }
+        members.forEach(m => w7Grudge(n, m, 10, 'survived another clash')); w7NemEvolve(n, 'survived another fight'); n.lastSeen = { loc: nearestPinId(), t: S.t }; w7Log('nemesis', `${n.name} survived the fight and is more bitter.`); } return; }
     if (u.dead || !fid || !FAC_P[fid] || (u.fled && false)) return; if (!(u.fled || u.uncon || T.result === 'flee' || T.result === 'defeat')) return; const rank = w7NemRankRx.test(u.best || u.name); if (!(rank ? w7Rnd() < 0.6 : (downedPc.length && w7Rnd() < 0.2))) return;
     const n = w7NemMake({ faction: fid, best: u.best || '', power: rank ? 3 : 2, origin: T.result === 'victory' ? 'fled the party' : 'beat the party', rank: rank ? 'lieutenant' : 'fighter', followers: rank ? 4 : 2, lastSeen: { loc: nearestPinId(), t: S.t } }); if (!n) return;
     members.forEach(m => w7Grudge(n, m, T.result === 'victory' ? 22 : 8, T.result === 'victory' ? 'was beaten and humiliated by them' : 'fought them and won; contemptuous')); downedPc.forEach(m => { if (n.grudges[m]) n.grudges[m].score = Math.min(100, n.grudges[m].score + 6); });
@@ -7426,7 +7452,7 @@ function w7NemAppear(T, ctx) {
   const here = w7Near(S.pos), cands = Object.values(s.nem).filter(n => n.status === 'active' && n.faction === fid && n.recover <= S.t && !n.npcId && (!T.units.some(u => u.nem))); if (!cands.length) return T;
   const hunting = id => facState().units.some(u => u.nem === id && u.status !== 'done' && facPos(u) && milesBetween(S.pos, facPos(u)) < 45);
   for (const n of cands) { const hm = n.home && w7Town(n.home) && here ? milesBetween(S.pos, w7Town(n.home)) : 120, near = hm < 70 || (n.lastSeen && here && n.lastSeen.loc === here.t.id), maxG = Math.max(0, ...Object.values(n.grudges).map(g => g.score)); const p = (hunting(n.id) ? 0.6 : near ? 0.12 : 0.02) * (0.5 + maxG / 100); if (w7Rnd() >= p) continue;
-    const foe = T.units.filter(u => u.side === 'foe').sort((a, b) => b.maxHp - a.maxHp)[0]; if (!foe) return T; const k = 1 + 0.05 * n.power; foe.name = n.name; foe.nem = n.id; foe.maxHp = Math.round(foe.maxHp * k); foe.hp = foe.maxHp; if (n.lost.length) foe.apMax = Math.max(4, foe.apMax - 1);
+    const foe = T.units.filter(u => u.side === 'foe').sort((a, b) => b.maxHp - a.maxHp)[0]; if (!foe) return T; const k = 1 + 0.05 * n.power; foe.name = n.name; foe.nem = n.id; foe.maxHp = Math.round(foe.maxHp * k); foe.hp = foe.maxHp; w7NemApply(T, foe, n); if (n.lost.length) foe.apMax = Math.max(4, foe.apMax - 1);
     n.appears++; n.lastSeen = { loc: here ? here.t.id : null, t: S.t }; const sc = n.scars.length ? ` (${n.scars[n.scars.length - 1]})` : ''; const top = Object.keys(n.grudges).sort((a, b) => n.grudges[b].score - n.grudges[a].score)[0];
     if (typeof tlog === 'function') tlog(T, `NEMESIS: ${n.name}${sc} is here${top ? ' and looking for ' + top : ''}. ${n.followers} followers are with them.`, 'bad'); w7NemHist(n, 'Found the party again (encounter).'); w7Log('nemesis', `${n.name} appeared in an encounter.`); break; }
   return T;
@@ -7439,7 +7465,7 @@ function w7NemDay(day) {
     if (n.home && !held.some(t => t.id === n.home)) { if (held.length) { n.home = held[0].id; if (n.rank !== 'fighter') { n.rank = W7_RANK[Math.max(0, W7_RANK.indexOf(n.rank) - 1)]; w7NemHist(n, 'Lost their home town and was demoted.'); } } else { n.status = 'missing'; return; } }
     if (n.status === 'missing') return;
     if (n.followers < 12 + n.power * 4 && FF.ready > 0.7 && w7Rnd() < 0.05) n.followers++;
-    const ri = W7_RANK.indexOf(n.rank); if (ri < 4 && n.recover <= S.t && w7Rnd() < 0.006 * (1 + n.survived * 0.3) * (FF.ready > 0.8 ? 1.2 : 0.7)) { n.rank = W7_RANK[ri + 1]; n.power = Math.min(10, n.power + 1); n.followers += 2; w7NemHist(n, `Promoted to ${n.rank}.`); w7Ledger('promotion', `${n.name} has been promoted to ${n.rank} in ${facName(n.faction)}.`, n.home ? [n.home] : [], [n.faction]); w7Log('nemesis', `${n.name} promoted to ${n.rank}.`); }
+    const ri = W7_RANK.indexOf(n.rank); if (ri < 4 && n.recover <= S.t && w7Rnd() < 0.006 * (1 + n.survived * 0.3) * (FF.ready > 0.8 ? 1.2 : 0.7)) { n.rank = W7_RANK[ri + 1]; n.power = Math.min(10, n.power + 1); n.followers += 2; w7NemHist(n, `Promoted to ${n.rank}.`); w7NemEvolve(n, 'promotion'); w7Ledger('promotion', `${n.name} has been promoted to ${n.rank} in ${facName(n.faction)}.`, n.home ? [n.home] : [], [n.faction]); w7Log('nemesis', `${n.name} promoted to ${n.rank}.`); }
     if ((n.rank === 'commander' || n.rank === 'warlord') && FF.leader.disputed > 0 && !n.bid && !s.props.some(p => p.kind === 'power' && p.nem === n.id && p.status === 'pending')) { n.bid = 1; w7Propose({ kind: 'power', nem: n.id, text: `${n.name} (${n.rank}, a Nemesis of the party) moves to seize leadership of ${facName(n.faction)} during its succession dispute. Approve: they become the leader.` }); }
     if (FF.leader.disputed === 0) n.bid = 0;
     // revenge: only on what the faction has actually heard about the party
@@ -7574,7 +7600,7 @@ function w7Panel(body) {
   const evs = ((S.world && S.world.events) || []).filter(e => e.visibility === 'host' && e.effects && e.effects[0]); if (evs.length) { body.appendChild(h('div', { class: 'note', text: 'Events only you can see (these never spread on their own):' })); evs.slice(-4).forEach(e => body.appendChild(h('div', { class: 'row', style: { fontSize: '12px' } }, h('span', { style: { flex: 1 }, text: e.effects[0].slice(0, 130) }), h('button', { class: 'btn sm', text: 'LET IT SPREAD', onclick: () => { w7Release(e.id); renderTab(); } })))); }
   body.appendChild(h('h3', { text: 'WHAT SETTLEMENTS THINK OF THE PARTY' })); Object.keys(supState().towns).filter(id => !supState().towns[id].ruin).map(id => ({ id, r: w7Reputation(id) })).filter(o => o.r.heard).sort((a, b) => a.r.score - b.r.score).slice(0, 10).forEach(o => body.appendChild(h('div', { class: 'row', style: { fontSize: '12px' } }, h('span', { text: `${w7TName(o.id)}: ${o.r.score > 0 ? '+' : ''}${o.r.score} (${o.r.heard} stories)${o.r.why[0] ? ' · ' + o.r.why[0] : ''}` }))));
   const nm = Object.values(s.nem); body.appendChild(h('h3', { text: 'NEMESES (' + nm.length + ')' })); if (!nm.length) body.appendChild(h('div', { class: 'note', text: 'None yet. Ranked enemies who escape or beat the party can become Nemeses.' }));
-  nm.forEach(n => { const box = h('div', { class: 'slot' }, h('b', { text: `${n.name} · ${n.rank} of ${facName(n.faction)}` }), h('span', { class: 'note', text: `  ${n.status} · power ${n.power} · ${n.followers} followers · survived ${n.survived} · seen ${n.appears}×${n.plan ? ' · plan: ' + n.plan.type + ' (' + n.plan.stage + ')' : ''}` }), h('div', { class: 'note', text: `Scars: ${n.scars.join('; ') || 'none'}. Lost: ${n.lost.join('; ') || 'none'}. Home: ${n.home ? w7TName(n.home) : '?'}.` }));
+  nm.forEach(n => { const box = h('div', { class: 'slot' }, h('b', { text: `${n.name} · ${n.rank} of ${facName(n.faction)}` }), h('span', { class: 'note', text: `  ${n.status} · power ${n.power} · ${n.followers} followers · survived ${n.survived} · seen ${n.appears}×${n.plan ? ' · plan: ' + n.plan.type + ' (' + n.plan.stage + ')' : ''}` }), h('div', { class: 'note', text: `Gear: ${(n.gear || []).map(g => g.n).join(', ') || 'none'}. Tactics: ${n.tactics || 'direct'}. Scars: ${n.scars.join('; ') || 'none'}. Lost: ${n.lost.join('; ') || 'none'}. Home: ${n.home ? w7TName(n.home) : '?'}.` }));
     Object.keys(n.grudges).forEach(m => box.appendChild(h('div', { class: 'ov-row' }, h('span', { style: { width: '90px' }, text: m }), h('input', { class: 'ov-in', type: 'number', min: 0, max: 100, value: Math.round(n.grudges[m].score), style: { width: '70px' }, onchange: e => { n.grudges[m].score = Math.max(0, Math.min(100, +e.target.value || 0)); markDirty(); } }), h('span', { class: 'note', text: n.grudges[m].why.slice(-2).join('; ') }))));
     box.appendChild(h('div', { class: 'note dim', text: n.history.slice(-3).map(x => x.when + ' ' + x.text).join(' | ') })); box.appendChild(h('div', { class: 'ov-btns' }, h('button', { class: 'btn sm', text: 'RETIRE', onclick: () => { n.status = 'dead'; w7NemHist(n, 'Retired by the host.'); renderTab(); } }))); body.appendChild(box); });
   const ken = S.world && S.world.npcs && S.world.npcs.npc_ken_chum; if (ken) { const tr = Object.values(s.nem).some(n => n.npcId === 'npc_ken_chum'); body.appendChild(h('div', { class: 'ov-btns' }, h('button', { class: 'btn sm', text: tr ? 'KEN CHUM IS TRACKED AS A NEMESIS' : 'TRACK KEN CHUM AS A NEMESIS', disabled: tr, onclick: () => { w7NemFromNpc('npc_ken_chum'); renderTab(); } }), h('button', { class: 'btn sm', text: 'LET THE STORY OF KEN\'S SALE SPREAD', onclick: () => { w7Release('ev_ken_sale'); toast('The story starts at San Antonio.', 'info'); renderTab(); } }))); body.appendChild(h('div', { class: 'note', text: 'Ken\'s history is never changed by the simulation. His escape, transfer or freedom only happen if you approve a proposal above.' })); }
@@ -7583,7 +7609,7 @@ function w7Panel(body) {
   body.appendChild(h('h3', { text: 'LATEST' })); s.log.slice(-10).reverse().forEach(e => body.appendChild(h('div', { class: 'slot' }, h('span', { class: 'note', text: e.when + ' · ' + e.kind + '  ' }), h('span', { text: e.text }))));
 }
 window.__vndWorld7 = { state: w7, tick: w7Tick, day: w7Day, ingest: w7Ingest, seed: w7Seed, release: w7Release, reputation: w7Reputation, facRep: w7FacRep, reach: w7Reach, path: w7Path2, deliver: w7Deliver, items: () => Object.values(w7().items), known: id => w7K(id),
-  nemesis: { list: () => Object.values(w7().nem), make: w7NemMake, fromNpc: w7NemFromNpc, grudge: w7Grudge, afterBattle: w7AfterBattle, appear: w7NemAppear, day: w7NemDay }, slavery: { init: w7SlInit, captured: w7Captured, liberate: w7Liberate, state: w7Sl, movers: () => w7().mv, town: w7SlT, tracked: w7Tracked },
+  nemesis: { list: () => Object.values(w7().nem), make: w7NemMake, fromNpc: w7NemFromNpc, grudge: w7Grudge, afterBattle: w7AfterBattle, appear: w7NemAppear, day: w7NemDay, evolve: w7NemEvolve, apply: w7NemApply, tactics: W7_TACTICS }, slavery: { init: w7SlInit, captured: w7Captured, liberate: w7Liberate, state: w7Sl, movers: () => w7().mv, town: w7SlT, tracked: w7Tracked },
   proposals: () => w7().props, resolve: w7Resolve, propose: w7Propose, context: w7Context, ensure: w7 };
 
 /* =====================================================================
@@ -10633,9 +10659,9 @@ window.VND = {
       add('JOIN WITH SELECTED CHARACTER',()=>{
         const choice=choices.find(x=>x.key===selected);if(!choice)return toast('Choose a character first.','warn');
         const pending=window.__vndPendingJoin;const id=(pending&&pending.id)||'';if(!id)return vndRenderMainMenu('main');
-        const fallback=choice.rec?(choice.rec.member.name||choice.rec.name):({rodney:'Rodney',rob:'Rob',el_runto:'El Runto'}[choice.key.slice(7)]);
+        const bkey=String(choice.key).split(':').pop();const fallback=choice.rec?(choice.rec.member.name||choice.rec.name):({rodney:'Rodney',rob:'Rob',el_runto:'El Runto'}[bkey]);
         const nm=prompt('Player name',lsGet('vnd.mp.name')||fallback||'Player')||fallback||'Player';
-        MP.localCharacter=choice.rec?choice.rec:{builtinKey:choice.key.slice(7)};
+        MP.localCharacter=choice.rec?choice.rec:{builtinKey:bkey};
         root.remove();if(gameDevice)gameDevice.style.visibility='visible';newState(false);window.__vndGameStarted=true;MP.role='client';MP.status='ask';
         if(pending){MP.joinId=pending.id;MP.srv0=pending.srv;}
         document.body.classList.add('client');$('#party').classList.add('lerp');mpJoin(String(id).trim(),nm,mpSrvSetting());
@@ -13333,6 +13359,7 @@ window.VND=Object.assign(window.VND||{},{
   talkToNpc:talkNpc,
   extractNpcMemories:extractMemory,
   generateNpcBark:barkNpc,
+  voiceCore:{addEntry,profile,maybeAutoMemory,conversations,contextFor,allTalkable},
   aiVoices:VOICES.map(v=>({id:v.id,label:v.label,talk:v.talk})),
   aiVoiceFor:(id)=>{const m=allTalkable().find(x=>String(x.id)===String(id));return m?voiceFor(m):null;},
   setNpcHostControl:setHostControl,
@@ -14099,6 +14126,587 @@ const st=document.createElement('style');st.id='vndIcons';
 st.textContent='.vbi{display:inline-block;object-fit:contain;vertical-align:middle;filter:sepia(1) saturate(4.5) hue-rotate(-10deg) brightness(1.08);opacity:.92;pointer-events:none}'+
  '.vbi.vb-sp{display:block;width:34px;height:34px;margin:0 auto 2px}.vbi.vb-sk{width:20px;height:20px;margin-right:6px}.vbi.vb-pk{width:26px;height:26px;margin-right:6px}';
 document.head.appendChild(st);
+})();
+
+</script>
+<script id="vndVoiceJs">
+/* ===== VND VOICE CHAT + SPEECH RECOGNITION + NPC REACTION SYSTEM (Phase 11) =====
+   Layered on the existing scene / token / AI Brain code. Nothing here replaces an existing system:
+   - speech -> text: browser Web Speech API (feature-detected) with a SAY text box fallback
+   - attribution: host mic = the NPC token selected when the utterance STARTED; player mics = the character the
+     host assigned to that player's connection (derived from the connection, never from the message)
+   - hearing: hex distance + walls/doors; whisper / talk / shout radii
+   - memory: overheard lines go into the NPC's own conversation record (so the Memory Agent, rumours and the
+     existing talk/bark prompts see them) and persist with the save
+   - reactions: ONE batched, serial AI request per window for at most 2 NPCs, with cooldowns and a labelled local fallback
+   - audio: PeerJS media calls through a host-side WebAudio mixer (feature-detected, text-only fallback)            */
+(function () {
+  'use strict';
+  if (typeof S === 'undefined') return;
+  const VC = {};
+  const DEF = { on: true, stt: true, lang: 'en-US', bark: 'normal', react: 'ai+local', talk: 8, whisper: 2, shout: 16, chain: 2, muteIn: false, att: true, rumor: true, autoCtl: [] };
+  const FREQ = { off: { thr: 99, cd: 1e9, gap: 1e9, cap: 0, k: 0 }, low: { thr: 3.6, cd: 45000, gap: 12000, cap: 3, k: 1 }, normal: { thr: 2.6, cd: 25000, gap: 6000, cap: 6, k: 2 }, high: { thr: 1.6, cd: 14000, gap: 3500, cap: 10, k: 2 } };
+  const now = () => Date.now();
+  const cfg = () => { if (!S) return Object.assign({}, DEF); const c = S.voiceCfg = Object.assign({}, DEF, S.voiceCfg || {}); return c; };
+  const host = () => !isClient();
+  const esc = s => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const norm = s => esc(s).toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  const sceneById = id => S && S.scenes && S.scenes[id];
+  const vcOf = sc => (sc.vc = sc.vc || { log: [], sug: [], speaking: {} });
+  const rid = () => Math.random().toString(36).slice(2, 10);
+  const jacc = (a, b) => { const A = new Set(norm(a).split(' ').filter(Boolean)), B = new Set(norm(b).split(' ').filter(Boolean)); if (!A.size || !B.size) return 0; let i = 0; A.forEach(w => { if (B.has(w)) i++; }); return i / (A.size + B.size - i); };
+  const hash = s => { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } x ^= x >>> 16; x = Math.imul(x, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return (x >>> 0) / 4294967295; };
+
+  /* ---------------- classification ---------------- */
+  const IMPORTANT = /\b(kill|die|dead|shoot|murder|threat|attack|bomb|steal|rob|plan|secret|betray|traitor|ambush|deal|bribe|war|raid|surrender|hostage|spy|alliance|treaty|reward|bounty|poison|rebel|coup)\b/i;
+  const THREAT = /\b(kill|die|shoot|murder|hurt|attack|stab|gut|blow you|burn|slit|ambush|hostage|or else|put you down|i('| wi)ll end|you.?re dead)\b/i;
+  function classify(text, mode) {
+    let t = esc(text), m = mode || 'talk';
+    const w = t.match(/^\(?\s*(whisper(?:s|ing)?|w)\s*\)?\s*[:\-]\s*/i); if (w) { m = 'whisper'; t = t.slice(w[0].length); }
+    const s = t.match(/^\(?\s*(shout(?:s|ing)?|yell(?:s|ing)?)\s*\)?\s*[:\-]\s*/i); if (s) { m = 'shout'; t = t.slice(s[0].length); }
+    if (m === 'talk' && ((t.length > 3 && /[A-Z]/.test(t) && t === t.toUpperCase()) || /!!+$/.test(t))) m = 'shout';
+    return { text: t.slice(0, 280), mode: m, important: IMPORTANT.test(t), threat: THREAT.test(t) };
+  }
+  /* a muffled hearer only catches fragments */
+  function muffle(text, seed) { const w = String(text).split(/\s+/); let out = w.map((x, i) => (hash(seed + ':' + i) < 0.55 ? x : '…')); if (w.length > 3 && !out.includes('…')) out[Math.floor(hash(seed) * w.length)] = '…'; return out.join(' ').replace(/(…\s*){2,}/g, '… ').trim(); }
+
+  /* ---------------- hearing ---------------- */
+  function tokenOf(sc, uid) { return uid && scnTokens(sc).find(t => t.uid === uid); }
+  function lineCells(a, b) {
+    const A = hexCube(a.x, a.y), B = hexCube(b.x, b.y), n = hexDist(a, b), out = [];
+    for (let i = 1; i < n; i++) {
+      const t = i / n, q = A.q + (B.q - A.q) * t, r = A.r + (B.r - A.r) * t, s = A.s + (B.s - A.s) * t;
+      let rq = Math.round(q), rr = Math.round(r), rs = Math.round(s); const dq = Math.abs(rq - q), dr = Math.abs(rr - r), ds = Math.abs(rs - s);
+      if (dq > dr && dq > ds) rq = -rr - rs; else if (dr > ds) rr = -rq - rs;
+      out.push(hexOff(rq, rr));
+    }
+    return out;
+  }
+  function radiusFor(mode) { const c = cfg(); return mode === 'whisper' ? c.whisper : mode === 'shout' ? c.shout : c.talk; }
+  function hearers(sc, spkUid, mode) {
+    const sp = tokenOf(sc, spkUid); if (!sp) return [];
+    const R = radiusFor(mode), out = [];
+    sc.npcs.forEach(n => {
+      if (!n || n.dead) return; const uid = 'npc:' + n.id; if (uid === spkUid) return;
+      const d = hexDist(sp, n); if (d > R) return;
+      let pen = 0; lineCells(sp, n).forEach(c => { const ch = scnCh(sc, c.x, c.y); if (ch === '#') pen += 3; else if (ch === 'd') pen += 2; });
+      const eff = d + pen * (mode === 'shout' ? 0.5 : 1); if (eff > R) return;
+      out.push({ uid, id: n.id, cid: sc.id + ':' + n.id, npc: n, d, eff, clear: eff <= R * 0.6 });
+    });
+    return out.sort((a, b) => a.eff - b.eff);
+  }
+
+  /* ---------------- ingest: one entry point for host mic, player mic, text fallback and NPC lines ---------------- */
+  const seenIds = []; const seenText = {};
+  function ingest(o) {
+    if (!host() || !o) return null;
+    const c = cfg(); if (!c.on) return null;
+    const sc = sceneById(o.sceneId); if (!sc) return null;
+    const k = classify(o.text, o.mode); if (!k.text || k.text.length < 2) return null;
+    const id = o.id || ('v' + rid());
+    if (seenIds.includes(id)) return null;
+    const tk = (o.uid || 'narr') + '|' + norm(k.text); const tn = now();
+    if (seenText[tk] && tn - seenText[tk] < 4000) return null;
+    seenText[tk] = tn; seenIds.push(id); if (seenIds.length > 300) seenIds.shift();
+    Object.keys(seenText).forEach(x => { if (tn - seenText[x] > 15000) delete seenText[x]; });
+    const tok = o.uid ? tokenOf(sc, o.uid) : null; if (o.uid && !tok) return null;
+    const src = o.src || 'voice', depth = o.depth || 0;
+    const who = tok ? tok.name : 'Overseer';
+    const hs = tok ? hearers(sc, o.uid, k.mode) : [];
+    const rec = { id, at: tn, t: S.t, uid: o.uid || null, who, text: k.text, mode: k.mode, src, depth, important: k.important, threat: k.threat, heard: hs.map(x => x.uid), local: !!o.local, kind: tok ? (tok.npc ? 'npc' : 'pc') : 'narration' };
+    const vc = vcOf(sc); vc.log.push(rec); if (vc.log.length > 80) vc.log = vc.log.slice(-80);
+    if (tok) { sc.barks = (sc.barks || []).filter(b => tn - b.at < 8000).concat([{ uid: o.uid, text: k.text.slice(0, 140), at: tn }]).slice(-6); }
+    // speaker's own NPC record when the HOST is voicing it
+    if (tok && tok.npc && src !== 'npc') { try { VND.voiceCore.addEntry(sc.id + ':' + tok.npc.id, { role: 'host', text: k.text, vc: 1 }); } catch (e) {} }
+    // overheard -> each hearer's own conversation record (nearest 12, plus any hearer of an important line, capped at 25)
+    const lim = k.important ? 25 : 12;
+    hs.slice(0, lim).forEach(hh => {
+      try { VND.voiceCore.addEntry(hh.cid, { role: 'overheard', who, text: hh.clear ? k.text : muffle(k.text, id + hh.id), important: !!k.important, vc: 1, muffled: !hh.clear }); } catch (e) {}
+    });
+    if (src !== 'npc') consequences(sc, rec, hs, tok);
+    try { markDirty(); mpSyncSoon(); if (typeof sceneDraw === 'function') sceneDraw(); } catch (e) {}
+    try { schedule(sc, rec, k.threat || k.mode === 'shout'); } catch (e) { console.error('voice schedule', e); }
+    updatePanel();
+    return rec;
+  }
+  let lastRumor = 0; const memAt = {};
+  function consequences(sc, rec, hs, tok) {
+    const c = cfg(); if (!rec.important || !hs.length) return;
+    // the Memory Agent picks it up from the overheard record (important flag); only the two nearest, and it throttles itself
+    // Memory Agent: only the single nearest listener, at most once a minute per NPC, and never in rule-based-only mode (zero API use)
+    const nearest = hs.find(hh => !(hh.npc.aiProfile && hh.npc.aiProfile.hostControlled));
+    if (nearest && c.react !== 'local' && now() - (memAt[nearest.cid] || 0) > 60000) { memAt[nearest.cid] = now(); try { VND.voiceCore.maybeAutoMemory(nearest.cid); } catch (e) {} }
+    if (c.att && rec.threat && tok && tok.kind === 'pc') hs.slice(0, 3).forEach(hh => { try { VND.adjustNpcAttitude(hh.cid, -2, 'Overheard ' + rec.who + ' make a threat'); } catch (e) {} });
+    if (c.rumor && now() - lastRumor > 60000 && hs.some(x => x.clear) && window.__vndWorld7 && window.__vndWorld7.seed) {
+      const towns = [sc.town, sc.pin, sc.tag, sc.name, S.loc, S.town, S.here].filter(Boolean);
+      for (const t of towns) { try { const r = window.__vndWorld7.seed(rec.who + ' was overheard saying: "' + rec.text.slice(0, 160) + '"', t, { type: 'rumor', imp: rec.threat ? 3 : 2 }); if (r) { lastRumor = now(); rec.rumor = true; break; } } catch (e) {} }
+    }
+  }
+
+  /* ---------------- reaction scheduler ---------------- */
+  const Q = { timer: null, busy: false, again: false, pending: [], npcLast: {}, minute: [], lastAt: 0, last: {}, recent: [], aiDownUntil: 0, stats: { requests: 0, local: 0, dropped: 0, delivered: 0 }, pair: {}, err: '' };
+  VC.Q = Q;
+  function schedule(sc, rec, urgent) {
+    const c = cfg(), F = FREQ[c.bark] || FREQ.normal; if (!F.cap) return;
+    if (rec.src === 'npc' && rec.depth > c.chain) return;
+    Q.pending.push({ sceneId: sc.id, rec }); if (Q.pending.length > 30) Q.pending.shift();
+    if (Q.timer) { if (urgent) { clearTimeout(Q.timer); Q.timer = setTimeout(run, 350); Q.urgent = true; } return; }
+    Q.urgent = !!urgent; Q.timer = setTimeout(run, urgent ? 350 : 2500);
+  }
+  const bound = () => (MIC.armed && MIC.bound) || null;
+  function score(sc, hh, rec, F) {
+    const n = hh.npc, p = n.aiProfile || {}, R = radiusFor(rec.mode);
+    let s = (1 - Math.min(1, hh.eff / R)) * 2;
+    const first = esc(n.name).split(' ')[0].toLowerCase(), txt = rec.text.toLowerCase();
+    if (first.length > 2 && new RegExp('\\b' + first.replace(/[^a-z0-9]/g, '') + '\\b').test(txt)) s += 4;
+    if (n.fac && txt.includes(String(n.fac).toLowerCase().split(' ')[0])) s += 2;
+    if (rec.threat) s += 3; else if (rec.important) s += 1.2;
+    if (/\b(anyone|everybody|everyone|hey|you there|who)\b/.test(txt)) s += 1;
+    if ((p.attitude || 0) <= -30 || n.disp === 'hostile') s += 1.5; else if ((p.attitude || 0) >= 40) s += 0.8;
+    if (/guard|sentry|soldier|ranger|sheriff|deputy|warden|enforcer|trooper/i.test(n.role || '') && (rec.threat || rec.important)) s += 1.5;
+    if (/trader|merchant|vendor|shop|barkeep|bartender/i.test(n.role || '') && /\b(caps|trade|buy|sell|barter|price|deal)\b/.test(txt)) s += 1.5;
+    if (!hh.clear) s -= 1.2;
+    if (rec.mode === 'whisper') s -= 0.5;
+    if (rec.src === 'npc') s -= 1.4;
+    s += hash(hh.cid + rec.id) * 0.9;           // deterministic jitter: not every eligible NPC speaks every time
+    return s;
+  }
+  VC.score = (sc, hh, rec, F) => score(sc, hh, rec, F || FREQ[cfg().bark]);
+  function candidatesFor(sc, recs, F, tn) {
+    const best = {};
+    recs.forEach(rec => {
+      if (!rec.uid) return;
+      const hs = hearers(sc, rec.uid, rec.mode);
+      hs.forEach(hh => {
+        if (rec.src === 'npc' && Q.pair[rec.uid + '>' + hh.uid] && tn - Q.pair[rec.uid + '>' + hh.uid] < 40000) return;
+        const s = score(sc, hh, rec, F); if (!best[hh.cid] || s > best[hh.cid].s) best[hh.cid] = { hh, s, rec };
+      });
+    });
+    const b = bound();
+    return Object.values(best).filter(x => {
+      const p = x.hh.npc.aiProfile || {};
+      if (p.hostControlled) return false;
+      if (b && b === x.hh.cid) return false;
+      const urgent = x.rec.threat; const cd = F.cd * (urgent ? 0.5 : 1);
+      if (Q.npcLast[x.hh.cid] && tn - Q.npcLast[x.hh.cid] < cd) return false;
+      return x.s >= F.thr;
+    }).sort((a, b2) => b2.s - a.s);
+  }
+  async function run() {
+    Q.timer = null; const urgent = Q.urgent; Q.urgent = false;
+    if (!host()) return; if (Q.busy) { Q.again = true; return; }
+    const c = cfg(), F = FREQ[c.bark] || FREQ.normal, tn = now();
+    const fresh = Q.pending.filter(p => tn - p.rec.at < 20000); Q.pending = [];
+    if (!fresh.length) return;
+    const last = fresh[fresh.length - 1], sc = sceneById(last.sceneId); if (!sc) return;
+    Q.minute = Q.minute.filter(t => tn - t < 60000);
+    if (Q.minute.length >= F.cap || (!urgent && tn - Q.lastAt < F.gap)) { Q.stats.dropped++; return; }
+    const recs = fresh.filter(p => p.sceneId === sc.id).map(p => p.rec);
+    const cands = candidatesFor(sc, recs, F, tn).slice(0, F.k); if (!cands.length) return;
+    Q.busy = true; Q.lastAt = tn; Q.minute.push(tn);
+    const t0 = now(); let out = null, local = false;
+    try {
+      if (!/ai/.test(c.react)) throw new Error('local only');
+      if (now() < Q.aiDownUntil) throw new Error('AI recently unavailable');
+      Q.stats.requests++;
+      out = await aiReact(sc, recs, cands);
+    } catch (e) {
+      if (!/local only|recently unavailable/.test(String(e.message))) { Q.aiDownUntil = now() + 30000; Q.err = String(e.message || e).slice(0, 160); }
+      if (/local/.test(c.react)) { out = localReact(sc, recs, cands); local = true; Q.stats.local++; }
+    }
+    Q.busy = false;
+    if (out && out.length) deliver(sc, out, recs, local, t0);
+    if (Q.again) { Q.again = false; if (Q.pending.length && !Q.timer) Q.timer = setTimeout(run, 1200); }
+    updatePanel();
+  }
+  async function aiReact(sc, recs, cands) {
+    const sp = recs[recs.length - 1];
+    const payload = {
+      scene: { name: sc.name, tag: sc.tag || '' },
+      speaker: { name: sp.who, kind: sp.kind, mode: sp.mode },
+      lines: recs.filter(r => r.uid).slice(-4).map(r => ({ who: r.who, text: r.text, mode: r.mode, secondsAgo: Math.round((now() - r.at) / 1000) })),
+      recentNpcLines: Q.recent.slice(-4),
+      npcs: cands.map(x => {
+        const n = x.hh.npc, p = VND.getNpcProfile(x.hh.cid) || {};
+        const heard = recs.filter(r => r.uid && r.heard.includes(x.hh.uid)).slice(-3).map(r => ({ who: r.who, text: x.hh.clear ? r.text : muffle(r.text, r.id + n.id) }));
+        return { id: n.id, name: n.name, role: n.role, faction: n.fac || '', disposition: n.disp, attitude: p.attitude || 0, personality: esc(p.personality || p.description || '').slice(0, 160), goals: esc(p.goals || '').slice(0, 100), memories: (p.memory || []).slice(0, 3).map(m => esc(m.text).slice(0, 110)), distanceHexes: x.hh.d, hearing: x.hh.clear ? 'clear' : 'muffled', heard };
+      }),
+      task: 'Decide whether each listed NPC would BELIEVABLY speak up right now. Return JSON only: {"reactions":[{"id":"npcId","text":"4-22 words spoken aloud","intent":"alarm|warn|argue|intervene|agree|mock|comment"}]}. Omit an NPC (or return an empty list) when silence is more believable.'
+    };
+    const sys = 'You are the VND ambient-dialogue director for a Fallout-style tabletop game. Several nearby NPCs overheard what was said. Each NPC may ONLY react to what is in its own "heard" list (muffled lines are partial: it may be confused or ask what was said). Never use knowledge the NPC lacks. Stay in each NPC\'s personality, faction, disposition and memories. NPCs may talk to each other, argue, warn, join in or ignore it. No stage directions, no quotation marks, no repeating recentNpcLines, no two NPCs saying the same thing. Reply with the JSON object only.';
+    const raw = await window.aiCall(JSON.stringify(payload), sys, 260, 'bark');
+    const obj = window.aiParseJson(raw);
+    const list = Array.isArray(obj) ? obj : (obj && obj.reactions) || [];
+    return list.map(r => { const x = cands.find(c => String(c.hh.id) === String(r && r.id)); return x && r && esc(r.text) ? { cand: x, text: esc(r.text).replace(/^["'“]+|["'”]+$/g, '').slice(0, 200), intent: String(r.intent || 'comment').toLowerCase() } : null; }).filter(Boolean);
+  }
+  const LOCAL = {
+    threat: ['Hey! Put that away!', 'Easy! Nobody here wants a fight.', 'Somebody get help!', 'Watch your mouth, friend.'],
+    guard: ['Stand down. Now.', 'That is enough. Drop it.'],
+    mention: ['Were you talking to me?', 'Yeah? What is it?', 'You want something from me?'],
+    hostile: ['Keep talking. See where it gets you.', 'Big words.'],
+    trade: ['Caps talk. Words do not.', 'If you are buying, say so.'],
+    general: ['Not my business.', 'I heard that. Still not my business.', 'Hm.']
+  };
+  function localReact(sc, recs, cands) {
+    const sp = recs[recs.length - 1], out = [], used = new Set();
+    cands.forEach(x => {
+      const n = x.hh.npc, txt = sp.text.toLowerCase(), first = esc(n.name).split(' ')[0].toLowerCase();
+      const cat = sp.threat ? (/guard|sentry|soldier|ranger|sheriff|deputy|warden|trooper/i.test(n.role || '') ? 'guard' : 'threat') : (first.length > 2 && txt.includes(first)) ? 'mention' : (n.disp === 'hostile' ? 'hostile' : /\b(caps|trade|buy|sell|barter)\b/.test(txt) ? 'trade' : 'general');
+      const pool = LOCAL[cat].filter(t => !used.has(t) && !(Q.last[x.hh.cid] || []).some(l => jacc(l, t) > 0.6));
+      if (!pool.length) return;
+      const text = pool[Math.floor(hash(x.hh.cid + sp.id) * pool.length)]; used.add(text);
+      out.push({ cand: x, text, intent: sp.threat ? 'alarm' : 'comment' });
+    });
+    return out;
+  }
+  function deliver(sc, list, recs, local, t0) {
+    const tn = now();
+    if (tn - t0 > 15000 || (Q.pending.filter(p => p.rec.at > t0).length >= 3)) { Q.stats.dropped++; return; }      // stale: the scene moved on
+    list.forEach((r, i) => setTimeout(() => {
+      try {
+        const n = (sceneById(sc.id) || { npcs: [] }).npcs.find(z => z.id === r.cand.hh.npc.id); if (!n || n.dead) return;
+        const cid = sc.id + ':' + n.id, p = VND.getNpcProfile(cid); if (!p || p.hostControlled || bound() === cid) return;
+        const hist = Q.last[cid] = Q.last[cid] || [];
+        if (hist.some(l => jacc(l, r.text) > 0.6) || Q.recent.slice(-6).some(l => jacc(l.text, r.text) > 0.7)) { Q.stats.dropped++; return; }
+        hist.push(r.text); if (hist.length > 6) hist.shift();
+        Q.npcLast[cid] = now(); Q.recent.push({ who: n.name, text: r.text }); if (Q.recent.length > 10) Q.recent.shift();
+        const src = r.cand.rec; Q.pair[src.uid + '>' + 'npc:' + n.id] = now();
+        VND.voiceCore.addEntry(cid, { role: 'assistant', text: r.text, vc: 1 });
+        const rec = ingest({ sceneId: sc.id, uid: 'npc:' + n.id, text: r.text, src: 'npc', depth: (src.depth || 0) + 1, local });
+        if (rec) { rec.intent = r.intent; Q.stats.delivered++; }
+        if (/intervene|alarm/.test(r.intent)) { const vc = vcOf(sc); vc.sug.push({ at: now(), npc: n.name, text: n.name + ' may ' + (r.intent === 'alarm' ? 'raise the alarm' : 'intervene') + ': "' + r.text.slice(0, 80) + '"' }); vc.sug = vc.sug.slice(-8); }
+      } catch (e) { console.error('voice deliver', e); }
+      updatePanel();
+    }, i * 1400));
+  }
+
+  /* ---------------- speaker resolution ---------------- */
+  function activeScene() { if (!S) return null; let sc = sceneById(S.sceneOn) || sceneById(VC.sceneId); if (!sc) sc = Object.values(S.scenes || {}).find(s => s && s.pcs && Object.keys(s.pcs).length); return sc || null; }
+  function currentSpeaker() {
+    if (host()) {
+      const sc = activeScene(), sel = ui && ui.scene && ui.scene.sel;
+      if (sc && sel && /^(npc|pc):/.test(sel)) {
+        const t = tokenOf(sc, sel);
+        if (t && (t.npc || (t.mid && !isPC(memberById(t.mid))))) return { uid: sel, sceneId: sc.id, name: t.name, key: sc.id + '|' + sel };
+      }
+      return { uid: null, sceneId: sc && sc.id, name: 'Overseer (narration)', key: (sc ? sc.id : '') + '|narr' };
+    }
+    const m = (typeof myChars === 'function' ? myChars() : [])[0];
+    return m ? { uid: 'pc:' + m.id, name: m.name, key: 'pc:' + m.id } : { uid: null, name: 'no character', key: 'none' };
+  }
+  VC.speakerNow = currentSpeaker;
+
+  /* ---------------- submit: the same path for STT, typed text, host and client ---------------- */
+  function submit(text, sp, src) {
+    text = esc(text); if (!text) return null;
+    if (host()) { if (!sp.sceneId) return null; return ingest({ sceneId: sp.sceneId, uid: sp.uid, text, src: src || 'voice' }); }
+    if (!(MP && MP.conn && MP.conn.open)) { MIC.err = 'Not connected to the host - your line was not sent.'; updatePanel(); return null; }
+    mpSend({ t: 'voice', id: rid(), text: text.slice(0, 280), src: src || 'voice' }); return true;
+  }
+  VC.say = (text) => submit(text, currentSpeaker(), 'text');
+  const rate = {};
+  function handleVoice(conn, msg) {
+    const pub = conn && conn._pub, pl = pub && MP.players[pub]; if (!pl || pl.conn !== conn) return;
+    if (!pl.online) return;
+    const tn = now(), isVad = msg.kind === 'vad', RK = pub + (isVad ? ':v' : ':t'); rate[RK] = (rate[RK] || []).filter(t => tn - t < 10000); if (rate[RK].length >= (isVad ? 40 : 8)) return; rate[RK].push(tn);
+    const m = S.party.find(x => S.assign[x.id] && S.assign[x.id].pub === pub && isPC(x));
+    const sc = m && Object.values(S.scenes || {}).find(s => s && s.pcs && s.pcs[m.id]);
+    if (msg.kind === 'vad') { if (sc) setSpeaking(sc, 'pc:' + m.id, !!msg.on); return; }
+    if (!m) { try { conn.send({ t: 'toast', msg: 'Pick a character before speaking.', kind: 'warn' }); } catch (e) {} return; }
+    if (!sc) { try { conn.send({ t: 'toast', msg: m.name + ' is not in a scene, so nobody can hear you.', kind: 'warn' }); } catch (e) {} return; }
+    if (typeof msg.text !== 'string') return;
+    ingest({ sceneId: sc.id, uid: 'pc:' + m.id, text: msg.text.slice(0, 280), src: msg.src === 'text' ? 'text' : 'voice', id: 'c' + pub + ':' + String(msg.id || '').slice(0, 24) });
+  }
+  VC.handleVoice = handleVoice;
+  function setSpeaking(sc, uid, on) { const v = vcOf(sc); if (on) v.speaking[uid] = now(); else delete v.speaking[uid]; try { mpSyncSoon(); } catch (e) {} updatePanel(); }
+
+  /* ---------------- microphone: STT + VAD ---------------- */
+  const MIC = { armed: false, muted: false, rec: null, stamp: null, buf: '', interim: '', timer: null, fails: 0, err: '', level: 0, bound: null, stream: null, ana: null, vadOn: false, vadHold: 0, stopped: false, sttOk: false, ignore: false };
+  VC.mic = MIC;
+  const SRC = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+  function ignoreBriefly() { MIC.ignore = true; setTimeout(() => { MIC.ignore = false; }, 150); }
+  function filler(t) { return /^(um+|uh+|hmm+|ah+|er+|mm+)\W*$/i.test(t.trim()); }
+  function onFinal(txt, conf) {
+    txt = esc(txt); if (!txt || filler(txt)) return;
+    if (typeof conf === 'number' && conf > 0 && conf < 0.35 && txt.split(' ').length < 3) return;       // junk transcription
+    if (!MIC.stamp) MIC.stamp = currentSpeaker();
+    MIC.buf += (MIC.buf ? ' ' : '') + txt; MIC.interim = '';
+    clearTimeout(MIC.timer); MIC.timer = setTimeout(flush, 900);
+  }
+  function flush() {
+    clearTimeout(MIC.timer); MIC.timer = null;
+    const text = esc(MIC.buf + (MIC.interim ? ' ' + MIC.interim : '')); MIC.buf = ''; MIC.interim = '';
+    const sp = MIC.stamp || currentSpeaker(); MIC.stamp = null;
+    if (!text) return null;
+    return submit(text, sp, 'voice');
+  }
+  VC.flush = flush;
+  /* the selected token changed since this utterance started: whatever was already said belongs to the OLD token. It is sent now under the
+     old stamp, recognition restarts (interim text is cumulative, so old and new words must not mix), and control follows the new token. */
+  function checkSwitch() {
+    if (!MIC.armed) return false;
+    const sp = currentSpeaker(); let sw = false;
+    if (MIC.stamp && MIC.stamp.key !== sp.key) { sw = true; if (MIC.buf || MIC.interim) flush(); else MIC.stamp = null; ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} }
+    bindControl(); return sw;
+  }
+  VC.checkSwitch = checkSwitch;
+  VC.feedStt = (txt, isFinal, conf) => { if (MIC.ignore) return; if (checkSwitch()) return; if (isFinal) onFinal(txt, conf); else { if (!MIC.stamp) MIC.stamp = currentSpeaker(); MIC.interim = esc(txt); } };
+  function startRec() {
+    const SR = SRC(); const c = cfg();
+    if (!SR || !c.stt) { MIC.sttOk = false; if (!SR) MIC.err = 'Speech recognition is not supported in this browser (use Chrome or Edge) - type in the SAY box instead.'; return; }
+    try {
+      const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = c.lang || 'en-US'; MIC.rec = r; MIC.sttOk = true; MIC.ignore = false;
+      r.onresult = e => { for (let i = e.resultIndex; i < e.results.length; i++) { const res = e.results[i]; VC.feedStt(res[0].transcript, res.isFinal, res[0].confidence); } };
+      r.onerror = e => {
+        const k = e && e.error;
+        if (k === 'not-allowed' || k === 'service-not-allowed') { MIC.err = 'Microphone permission was denied. Allow it in the browser address bar, then press MIC ON. Text (SAY) still works.'; MIC.stopped = true; disarmMic(true); }
+        else if (k === 'network') { MIC.fails++; MIC.err = 'Speech service unreachable (network). Retrying - use SAY meanwhile.'; }
+        else if (k === 'audio-capture') { MIC.err = 'No microphone was found.'; MIC.stopped = true; disarmMic(true); }
+        else if (k !== 'no-speech' && k !== 'aborted') { MIC.fails++; MIC.err = 'Speech recognition error: ' + k; }
+        updatePanel();
+      };
+      r.onend = () => { MIC.rec = null; MIC.ignore = false; if (MIC.armed && !MIC.muted && !MIC.stopped && !MIC.releasing) { if (MIC.fails >= 5) { MIC.err = 'Speech recognition keeps failing - switched to text (SAY). Press MIC ON to retry.'; MIC.sttOk = false; MIC.fails = 0; updatePanel(); return; } setTimeout(() => { if (MIC.armed && !MIC.muted && !MIC.rec) startRec(); }, 400 + MIC.fails * 600); } };
+      r.start();
+    } catch (e) { MIC.err = 'Could not start speech recognition: ' + (e.message || e); MIC.sttOk = false; }
+  }
+  async function armMic() {
+    if (MIC.armed) return true;
+    if (!cfg().on) { MIC.err = 'Voice chat is switched off in the host settings.'; updatePanel(); return false; }
+    MIC.armed = true; MIC.muted = KB.mode === 'ptt' && !KB.down; MIC.stopped = false; MIC.err = ''; MIC.fails = 0; MIC.releasing = false;
+    bindControl();
+    if (!MIC.muted) startRec();
+    try { await startAudio(); } catch (e) { MIC.err = (MIC.err ? MIC.err + ' ' : '') + 'Voice audio unavailable (' + ((e && e.name) || e) + ') - speech-to-text and the SAY box still work.'; }
+    updatePanel(); return true;
+  }
+  function disarmMic(silent) {
+    flush(); MIC.armed = false; MIC.ignore = true; try { MIC.rec && MIC.rec.abort(); } catch (e) {} MIC.rec = null;
+    stopAudio(); unbindControl(); MIC.vadOn = false;
+    if (host()) { const sc = activeScene(); if (sc) { const sp = currentSpeaker(); if (sp.uid) setSpeaking(sc, sp.uid, false); } }
+    updatePanel();
+  }
+  function setMuted(m) {
+    MIC.muted = !!m; if (MIC.stream) MIC.stream.getAudioTracks().forEach(t => { t.enabled = !MIC.muted; });
+    if (MIC.muted) { flush(); ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} } else if (MIC.armed && !MIC.rec) startRec();
+    updatePanel();
+  }
+  VC.armMic = armMic; VC.disarmMic = disarmMic; VC.setMuted = setMuted;
+
+  /* host-controlled flag follows the bound NPC (restored on unbind, and after a crash) */
+  function bindControl() {
+    if (!host() || !MIC.armed) return;
+    const sp = currentSpeaker(), cid = sp.uid && /^npc:/.test(sp.uid) ? sp.sceneId + ':' + sp.uid.slice(4) : null;
+    if (MIC.bound === cid) return; unbindControl();
+    if (!cid) return;
+    try { const p = VND.getNpcProfile(cid); if (p && !p.hostControlled) { VND.setNpcHostControl(cid, true); const c = cfg(); c.autoCtl = (c.autoCtl || []).concat([cid]); } MIC.bound = cid; } catch (e) {}
+  }
+  function unbindControl() {
+    const c = cfg(); (c.autoCtl || []).forEach(cid => { try { VND.setNpcHostControl(cid, false); } catch (e) {} }); c.autoCtl = []; MIC.bound = null;
+  }
+  function watch() {
+    if (!S) return;
+    try {
+      checkSwitch();
+      if (host()) { ensureHostAudio(); const sc = activeScene(); if (sc) { const v = vcOf(sc); Object.keys(v.speaking).forEach(k => { const m = /^pc:(.+)$/.test(k) && S.assign[k.slice(3)]; const off = m && m.pub && !(MP.players[m.pub] && MP.players[m.pub].online); if (off || now() - v.speaking[k] > 3500) delete v.speaking[k]; }); } audioHealth(); }
+      else clientAudioRetry();
+      vadTick(); updatePanel();
+    } catch (e) { console.error('voice watch', e); }
+  }
+
+  /* ---------------- audio: mic capture, VAD, PeerJS calls, host mixer ---------------- */
+  const A = { ctx: null, in: {}, out: {}, hostSrc: null, hooked: null, call: null, tries: 0, els: {}, log: [] };
+  VC.audio = A;
+  const getCtx = () => { if (!A.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) throw new Error('no WebAudio'); A.ctx = new AC(); } try { A.ctx.resume && A.ctx.resume(); } catch (e) {} return A.ctx; };
+  async function startAudio() {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error('no getUserMedia');
+    MIC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    MIC.stream.getAudioTracks().forEach(t => { t.enabled = !MIC.muted; });
+    MIC.stream.getAudioTracks().forEach(t => { t.onended = () => { if (MIC.armed) { MIC.err = 'The microphone was disconnected.'; disarmMic(true); } }; });
+    const ctx = getCtx(); const src = ctx.createMediaStreamSource(MIC.stream); const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an); MIC.ana = an; MIC.src = src;
+    if (host()) { A.hostSrc = src; Object.keys(A.out).forEach(pub => { try { src.connect(A.out[pub].dest); } catch (e) {} }); }
+    else callHost();
+  }
+  function stopAudio() {
+    try { if (host() && A.hostSrc) Object.keys(A.out).forEach(pub => { try { A.hostSrc.disconnect(A.out[pub].dest); } catch (e) {} }); } catch (e) {}
+    A.hostSrc = null;
+    try { MIC.stream && MIC.stream.getTracks().forEach(t => t.stop()); } catch (e) {} MIC.stream = null; MIC.ana = null; MIC.src = null;
+    try { A.call && A.call.close(); } catch (e) {} A.call = null;
+  }
+  function vadTick() {
+    if (!MIC.armed || !MIC.ana || MIC.muted) { if (MIC.vadOn) { MIC.vadOn = false; pushVad(false); } MIC.level = 0; return; }
+    const buf = new Uint8Array(MIC.ana.fftSize); MIC.ana.getByteTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+    MIC.level = Math.sqrt(s / buf.length); const tn = now();
+    if (MIC.level > 0.04) MIC.vadHold = tn;
+    const on = tn - MIC.vadHold < 450; if (on !== MIC.vadOn) { MIC.vadOn = on; pushVad(on); } else if (on && tn % 2000 < 260) pushVad(true);
+  }
+  function pushVad(on) {
+    if (host()) { const sp = currentSpeaker(), sc = sp.sceneId && sceneById(sp.sceneId); if (sc && sp.uid) setSpeaking(sc, sp.uid, on); }
+    else if (MP && MP.conn && MP.conn.open) mpSend({ t: 'voice', kind: 'vad', on });
+  }
+  /* host: one mix per player = host mic + every OTHER player */
+  function outFor(pub) {
+    if (A.out[pub]) return A.out[pub];
+    const ctx = getCtx(), dest = ctx.createMediaStreamDestination(); A.out[pub] = { dest };
+    if (A.hostSrc) A.hostSrc.connect(dest);
+    Object.keys(A.in).forEach(p2 => { if (p2 !== pub) A.in[p2].src.connect(dest); });
+    return A.out[pub];
+  }
+  function addInput(pub, stream) {
+    dropInput(pub); const ctx = getCtx(), src = ctx.createMediaStreamSource(stream); A.in[pub] = { src, stream };
+    try { const el = new Audio(); el.srcObject = stream; el.muted = true; A.els[pub] = el; el.play && el.play().catch(() => {}); } catch (e) {}      // keeps Chrome pulling the remote stream
+    Object.keys(A.out).forEach(p2 => { if (p2 !== pub) src.connect(A.out[p2].dest); });
+    if (!cfg().muteIn) src.connect(ctx.destination);
+    A.log.push('in:' + pub);
+  }
+  function dropInput(pub) {
+    const i = A.in[pub]; if (!i) return;
+    try { i.src.disconnect(); } catch (e) {} delete A.in[pub]; try { A.els[pub] && (A.els[pub].srcObject = null); } catch (e) {} delete A.els[pub];
+    A.log.push('drop:' + pub);
+  }
+  function onCall(call) {
+    try {
+      const pub = Object.keys(MP.players).find(p => MP.players[p].conn && MP.players[p].conn.peer === call.peer);
+      if (!pub) { call.close(); return; }
+      const o = outFor(pub); call.answer(o.dest.stream);
+      call.on('stream', rs => { try { addInput(pub, rs); } catch (e) { console.error(e); } });
+      call.on('close', () => dropInput(pub)); call.on('error', () => dropInput(pub));
+    } catch (e) { MIC.err = 'Voice call failed: ' + (e.message || e); }
+  }
+  VC.onCall = onCall;
+  function ensureHostAudio() { if (MP && MP.peer && MP.peer !== A.hooked && typeof MP.peer.on === 'function') { A.hooked = MP.peer; try { MP.peer.on('call', onCall); } catch (e) {} } }
+  function audioHealth() { Object.keys(A.in).forEach(pub => { const pl = MP.players[pub]; if (!pl || !pl.online || !pl.conn || !pl.conn.open) { dropInput(pub); const sc = activeScene(); const m = S.party.find(x => S.assign[x.id] && S.assign[x.id].pub === pub); if (sc && m) setSpeaking(sc, 'pc:' + m.id, false); } }); Object.keys(A.out).forEach(pub => { const pl = MP.players[pub]; if (!pl || !pl.online) { try { A.out[pub].dest.disconnect(); } catch (e) {} delete A.out[pub]; } }); }
+  /* client */
+  function silentStream() { const ctx = getCtx(); if (!A.silent) A.silent = ctx.createMediaStreamDestination(); return A.silent.stream; }
+  function callHost() {
+    if (host() || !MP || !MP.peer || typeof MP.peer.call !== 'function' || !MP.joinId) return false;
+    try {
+      if (A.call) { try { A.call.close(); } catch (e) {} A.call = null; }
+      A.listenOnly = !MIC.stream;
+      const call = MP.peer.call(MP.joinId, MIC.stream || silentStream()); A.call = call; A.lastTry = now();
+      call.on('stream', rs => { A.tries = 0; try { const el = A.els.host || (A.els.host = new Audio()); el.srcObject = rs; el.play && el.play().catch(() => {}); } catch (e) {} });
+      call.on('close', () => { if (A.call === call) A.call = null; }); call.on('error', () => { if (A.call === call) A.call = null; });
+      return true;
+    } catch (e) { MIC.err = 'Could not open the voice call to the host: ' + (e.message || e); return false; }
+  }
+  /* every joined player is connected to the host's mixer as soon as they interact with the page, even with the mic off, so they HEAR the host and the other players */
+  let gesture = false; ['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, () => { gesture = true; }, { capture: true, once: true }));
+  function ensureListen() { if (host() || !gesture || A.call || A.tries > 6 || !MP || MP.status !== 'live' || now() - (A.lastTry || 0) < 3000 || !cfg().on) return; A.tries++; try { callHost(); } catch (e) {} }
+  function clientAudioRetry() { ensureListen(); }
+
+  /* ---------------- UI ---------------- */
+  function who() { const sp = currentSpeaker(); return sp; }
+  function micState() { if (!MIC.armed) return ['OFF', '#888']; if (MIC.muted) return KB.mode === 'ptt' ? ['READY - hold ' + keyLabel(KB.key), '#d9a441'] : ['MUTED', '#d9a441']; return [MIC.vadOn ? 'SPEAKING' : 'LIVE', MIC.vadOn ? '#6fd36f' : '#9bc59b']; }
+  function updatePanel() {
+    const g = id => document.getElementById(id); if (!g('vcStatus')) return;
+    try {
+      const sp = currentSpeaker(), st = micState();
+      g('vcStatus').textContent = 'MIC ' + st[0] + (MIC.sttOk ? ' · speech-to-text on' : MIC.armed ? ' · text only (SAY)' : ''); g('vcStatus').style.color = st[1];
+      g('vcMeter').style.width = Math.min(100, Math.round(MIC.level * 400)) + '%';
+      g('vcAs').textContent = host() ? (sp.uid ? 'Host mic speaks AS: ' + sp.name + (sp.uid.startsWith('npc:') ? ' (host-controlled)' : ' (companion)') : 'Host mic: narration only - select an NPC token to speak as it') : 'Your voice speaks as: ' + sp.name;
+      g('vcBtnKey').textContent = KB.rebinding ? 'PRESS A KEY… (Esc cancels)' : 'KEY: ' + keyLabel(KB.key); g('vcMode').value = KB.mode;
+      g('vcKeyHint').textContent = KB.mode === 'ptt' ? 'Hold ' + keyLabel(KB.key) + ' to talk; release to send. Works anywhere except while typing.' : 'Press ' + keyLabel(KB.key) + ' to turn the mic on, again to mute / unmute. Works anywhere except while typing.';
+      g('vcLink').textContent = host() ? 'Voice link: ' + Object.keys(A.in).length + ' player(s) connected by audio' + (MIC.armed ? ' · everyone hears you' : '') : (A.call ? 'Voice link: connected - you hear the host and other players' + (A.listenOnly ? ' (listening)' : '') : (MP && MP.status === 'live' ? 'Voice link: connecting after your first click or key press…' : 'Voice link: not connected'));
+      g('vcErr').textContent = MIC.err || ''; g('vcErr').style.display = MIC.err ? '' : 'none';
+      g('vcBtnMic').textContent = MIC.armed ? 'MIC OFF' : 'MIC ON'; g('vcBtnMute').style.display = MIC.armed ? '' : 'none'; g('vcBtnMute').textContent = MIC.muted ? 'UNMUTE' : 'MUTE';
+      const sc = sceneById(VC.sceneId); const v = sc && sc.vc;
+      const names = v ? Object.keys(v.speaking || {}).filter(k => now() - v.speaking[k] < 3500).map(k => { const t = tokenOf(sc, k); return t ? t.name : k; }) : [];
+      g('vcNow').textContent = names.length ? 'Speaking now: ' + names.join(', ') : 'Nobody speaking';
+      const lg = g('vcLog'); if (lg && v) { lg.innerHTML = ''; (v.log || []).slice(-8).forEach(r => { const d = document.createElement('div'); d.style.cssText = 'margin:2px 0;font-size:12px;' + (r.src === 'npc' ? 'color:#9bc59b' : r.kind === 'narration' ? 'color:#aaa' : ''); d.textContent = r.who + (r.mode !== 'talk' ? ' (' + r.mode + ')' : '') + ': ' + r.text + (r.src === 'npc' ? (r.local ? '  [rule-based]' : '') : '  · ' + (r.heard || []).length + ' heard'); lg.appendChild(d); }); lg.scrollTop = lg.scrollHeight; }
+      const sg = g('vcSug'); if (sg && host() && v) { sg.innerHTML = ''; (v.sug || []).slice(-3).forEach(s => { const d = document.createElement('div'); d.style.cssText = 'font-size:12px;color:#d9a441'; d.textContent = '• ' + s.text; sg.appendChild(d); }); }
+    } catch (e) {}
+  }
+  function voiceSection(side, sc, isHost) {
+    const c = cfg(), sec = sceneSection('VOICE CHAT', true), b = sec.b;
+    const mk = (id, tag, st, txt) => { const e = h(tag, { id, style: st || {} }); if (txt) e.textContent = txt; return e; };
+    b.appendChild(mk('vcStatus', 'div', { fontWeight: 'bold' }, 'MIC OFF'));
+    const bar = h('div', { style: { height: '6px', background: '#1b2a1b', margin: '3px 0', border: '1px solid #345' } }, h('div', { id: 'vcMeter', style: { height: '100%', width: '0%', background: '#6fd36f' } })); b.appendChild(bar);
+    b.appendChild(mk('vcAs', 'div', { fontSize: '12px', margin: '2px 0' }));
+    b.appendChild(mk('vcErr', 'div', { fontSize: '12px', color: '#e07a5f', display: 'none' }));
+    b.appendChild(h('div', { class: 'tc-row wrap' },
+      h('button', { id: 'vcBtnMic', class: 'btn sm grn', onclick: () => { MIC.armed ? disarmMic() : armMic(); } }),
+      h('button', { id: 'vcBtnMute', class: 'btn sm', style: { display: 'none' }, onclick: () => setMuted(!MIC.muted) })));
+    const modeSel = h('select', { id: 'vcMode', class: 'ov-in', style: { width: 'auto' }, onchange: () => setMode(modeSel.value) }, h('option', { value: 'toggle', text: 'TOGGLE' }), h('option', { value: 'ptt', text: 'PUSH-TO-TALK' })); modeSel.value = KB.mode;
+    b.appendChild(h('div', { class: 'tc-row wrap', style: { alignItems: 'center' } }, h('span', { text: 'Mode', style: { fontSize: '12px' } }), modeSel,
+      h('button', { id: 'vcBtnKey', class: 'btn sm', onclick: () => { KB.rebinding = true; updatePanel(); } })));
+    b.appendChild(mk('vcKeyHint', 'div', { fontSize: '11px', color: '#9aa', margin: '2px 0' }));
+    b.appendChild(mk('vcLink', 'div', { fontSize: '11px', color: '#9aa', margin: '2px 0' }));
+    const inp = h('input', { class: 'ov-in', style: { width: '100%' }, placeholder: 'SAY (typed fallback) - prefix "whisper:" or "shout:"', maxlength: 280 });
+    const send = () => { const t = inp.value.trim(); if (!t) return; if (!cfg().on && isHost) { toast('Voice chat is switched off in the settings.', 'warn'); return; } VC.say(t); inp.value = ''; };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); send(); } });
+    b.appendChild(inp); b.appendChild(h('div', { class: 'tc-row' }, scnBtn('SAY', send)));
+    b.appendChild(mk('vcNow', 'div', { fontSize: '12px', color: '#9bc59b', margin: '3px 0' }));
+    b.appendChild(mk('vcLog', 'div', { maxHeight: '120px', overflowY: 'auto', border: '1px solid #234', padding: '3px', background: 'rgba(0,0,0,.25)' }));
+    if (isHost) {
+      b.appendChild(mk('vcSug', 'div', { margin: '3px 0' }));
+      const set = sceneSection('VOICE SETTINGS (Overseer)', false), sb = set.b;
+      const row = (label, el) => sb.appendChild(h('div', { class: 'ov-row' }, h('span', { text: label }), el));
+      const chk = (label, key) => { const e = h('input', { type: 'checkbox' }); e.checked = !!c[key]; e.onchange = () => { cfg()[key] = e.checked; markDirty(); updatePanel(); }; row(label, e); };
+      const sel = (label, key, opts) => { const e = h('select', { class: 'ov-in' }, ...opts.map(o => h('option', { value: o[0], text: o[1] }))); e.value = c[key]; e.onchange = () => { cfg()[key] = e.value; markDirty(); }; row(label, e); };
+      const num = (label, key, lo, hi) => { const e = h('input', { class: 'ov-in', type: 'number', min: lo, max: hi, style: { width: '70px' } }); e.value = c[key]; e.onchange = () => { cfg()[key] = Math.max(lo, Math.min(hi, +e.value || lo)); e.value = cfg()[key]; markDirty(); }; row(label, e); };
+      chk('Voice chat enabled', 'on'); chk('Speech-to-text', 'stt'); chk('Mute incoming player audio (this device)', 'muteIn');
+      sel('Language', 'lang', [['en-US', 'English (US)'], ['en-GB', 'English (UK)'], ['es-ES', 'Spanish'], ['fr-FR', 'French'], ['de-DE', 'German']]);
+      sel('NPC bark frequency', 'bark', [['off', 'Off'], ['low', 'Low'], ['normal', 'Normal'], ['high', 'High']]);
+      sel('AI reaction mode', 'react', [['ai+local', 'AI, rule-based fallback'], ['ai', 'AI only'], ['local', 'Rule-based only (no API use)']]);
+      num('Talk radius (hexes)', 'talk', 3, 20); num('Whisper radius', 'whisper', 1, 5); num('Shout radius', 'shout', 6, 40); num('NPC-to-NPC chain depth', 'chain', 0, 3);
+      chk('Overheard threats lower attitude', 'att'); chk('Important lines become rumours', 'rumor');
+      b.appendChild(set.d);
+    }
+    side.appendChild(sec.d); setTimeout(updatePanel, 0);
+  }
+  VC.voiceSection = voiceSection;
+
+  /* ---------------- keybind: toggle or push-to-talk (per device) ---------------- */
+  const KB = { key: 'KeyV', mode: 'toggle', down: false, rebinding: false, rel: null };
+  try { const o = JSON.parse(localStorage.getItem('vnd.voice.keys') || '{}'); if (typeof o.key === 'string' && o.key) KB.key = o.key; if (o.mode === 'ptt' || o.mode === 'toggle') KB.mode = o.mode; } catch (e) {}
+  const saveKb = () => { try { localStorage.setItem('vnd.voice.keys', JSON.stringify({ key: KB.key, mode: KB.mode })); } catch (e) {} };
+  const keyLabel = c => String(c).replace(/^Key/, '').replace(/^Digit/, '').replace('Backquote', '`').replace('Semicolon', ';').replace('Quote', "'").replace('Comma', ',').replace('Period', '.').replace('Slash', '/').replace('Backslash', '\\').replace('Space', 'Space');
+  const RESERVED = new Set(['Escape', 'Tab', 'Enter', 'Backspace', 'MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'Equal', 'Minus', 'Digit0']);
+  const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+  async function toggleKey() {
+    if (!MIC.armed) { const ok = await armMic(); if (ok) { setMuted(false); try { toast('Mic live (' + keyLabel(KB.key) + ' to mute)', 'info'); } catch (e) {} } return; }
+    setMuted(!MIC.muted); try { toast(MIC.muted ? 'Mic muted' : 'Mic live', 'info'); } catch (e) {}
+  }
+  async function pttDown() {
+    KB.down = true; MIC.releasing = false; clearTimeout(KB.rel);
+    if (!MIC.armed) { const ok = await armMic(); if (!ok) { KB.down = false; return; } }
+    if (!KB.down) { setMuted(true); return; }                 // released while the microphone was still being opened
+    setMuted(false);
+  }
+  function pttUp() {
+    KB.down = false; if (!MIC.armed) return; clearTimeout(KB.rel);
+    MIC.releasing = true;                                       // keep the tail of the sentence: stop() delivers the final transcript, abort() would throw it away
+    KB.rel = setTimeout(() => { try { MIC.rec && MIC.rec.stop(); } catch (e) {} setTimeout(() => { MIC.releasing = false; if (KB.down) return; flush(); setMuted(true); }, 600); }, 250);
+  }
+  function setMode(m) { if (m !== 'ptt' && m !== 'toggle') return; KB.mode = m; saveKb(); if (MIC.armed) { if (m === 'ptt' && !KB.down) setMuted(true); else if (m === 'toggle') setMuted(false); } updatePanel(); }
+  window.addEventListener('keydown', e => {
+    if (KB.rebinding) { e.preventDefault(); e.stopPropagation(); if (e.code !== 'Escape') { if (RESERVED.has(e.code)) { MIC.err = 'That key is reserved - choose another.'; } else { KB.key = e.code; MIC.err = ''; saveKb(); } } KB.rebinding = false; updatePanel(); return; }
+    if (!S || e.code !== KB.key || e.repeat || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+    if (!cfg().on) return;
+    e.preventDefault(); e.stopPropagation();
+    if (KB.mode === 'ptt') pttDown(); else toggleKey();
+  }, true);
+  window.addEventListener('keyup', e => { if (e.code === KB.key && KB.down) { e.preventDefault(); pttUp(); } }, true);
+  window.addEventListener('blur', () => { if (KB.down) pttUp(); });
+  VC.kb = KB; VC.toggleKey = toggleKey; VC.pttDown = pttDown; VC.pttUp = pttUp; VC.setMode = setMode;
+
+  /* ---------------- wiring into the existing app ---------------- */
+  try {
+    const _ss = sceneSide;
+    sceneSide = function (side, sc, hostFlag, edit) { VC.sceneId = sc && sc.id; const r = _ss.apply(this, arguments); try { voiceSection(side, sc, hostFlag); } catch (e) { console.error('voice panel', e); } return r; };
+    const _h = hostOnMsg;
+    hostOnMsg = function (conn, msg) { if (msg && msg.t === 'voice') { try { handleVoice(conn, msg); } catch (e) { console.error('voice msg', e); } return; } return _h.apply(this, arguments); };
+    const _ns = netState;
+    netState = function () {
+      const o = _ns.apply(this, arguments);
+      if (o.scenes) { const sc = {}; for (const k in o.scenes) { const s = o.scenes[k]; if (s && s.vc) { const v = s.vc; sc[k] = Object.assign({}, s, { vc: { speaking: v.speaking || {}, sug: [], log: (v.log || []).slice(-20).map(r => ({ id: r.id, at: r.at, who: r.who, text: r.text, mode: r.mode, src: r.src, kind: r.kind, heard: (r.heard || []).slice(0, 0), local: r.local })) } }); } else sc[k] = s; } o.scenes = sc; }
+      if (o.voiceCfg) o.voiceCfg = { on: o.voiceCfg.on, lang: o.voiceCfg.lang, stt: o.voiceCfg.stt };
+      return o;
+    };
+  } catch (e) { console.error('voice wiring', e); }
+  setInterval(watch, 250);
+  // after a crash or reload, give back any NPC the host mic had taken over
+  setTimeout(() => { try { if (S && S.voiceCfg && S.voiceCfg.autoCtl && S.voiceCfg.autoCtl.length && !MIC.armed && host()) unbindControl(); } catch (e) {} }, 3000);
+  VC.ingest = ingest; VC.hearers = hearers; VC.classify = classify; VC.muffle = muffle; VC.cfg = cfg; VC.run = run; VC.localReact = localReact; VC.lineCells = lineCells; VC.FREQ = FREQ; VC.updatePanel = updatePanel;
+  window.VND = Object.assign(window.VND || {}, { voice: VC });
 })();
 
 </script>
