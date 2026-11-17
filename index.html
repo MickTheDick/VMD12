@@ -12097,6 +12097,14 @@ function agentMark(role, status, err){
   }catch(e){}
 }
 
+ async function aiTranscribe(b64){      // speech-to-text for the voice chat: one audio request on the lite tier, through the same budget, model routing and usage counters
+  const base=aiCfg();if(!base.endpoint||!base.key)throw new Error('Configure the endpoint and API key in AI CONTROLS → API first.');
+  const role='bark',allow=agentIsAllowed(role);if(allow!==true)throw new Error('Speech-to-text is '+allow+'.');
+  const c=aiAgentConfig(),route=c.routing[role]||role,agent=c.agents[route]||c.agents.dialog;let M=aiModelsFor(c,route,agent,base);
+  if(!M.primary)throw new Error('No model is configured. Open AI CONTROLS → API and run VERIFY MODELS.');
+  await aiAwaitBudget(Date.now()+8000,'Speech-to-text');
+  return await aiRequest({endpoint:agent.endpoint||base.endpoint,key:agent.key||base.key,model:M.primary,_role:role},[{type:'text',text:'Transcribe the speech in this audio exactly as spoken. Output ONLY the spoken words, with no commentary. If there is no intelligible speech, output nothing.'},{type:'input_audio',input_audio:{data:b64,format:'wav'}}],'You are a speech-to-text transcriber for a tabletop role-playing game. Never add words that were not spoken.',200,15000);
+ }
  async function aiCall(user,system,maxTokens,role){
   user=w9Scrub(user);
   return w9Scrub(await aiCallRaw(user,system,maxTokens,role));
@@ -12112,7 +12120,11 @@ function agentMark(role, status, err){
     throw new Error(label+' is '+allow+'. Resume or enable it in AI CONTROLS → Agents.');
   }
   const route=c.routing[role]||role,agent=c.agents[route]||c.agents.dialog,label=agent.label||route;
-  const M=aiModelsFor(c,route,agent,base);
+  let M=aiModelsFor(c,route,agent,base);
+  if(!M.primary&&base.key&&base.endpoint&&Date.now()-(aiLive.autoAt||0)>60000){       // a key is saved but no model was ever picked: look the models up once instead of failing every player's request
+    aiLive.autoAt=Date.now();
+    try{aiAudit('No model selected yet - verifying models automatically','INFO');await aiVerifyModels(false);const c2=aiAgentConfig();M=aiModelsFor(c2,c2.routing[role]||route,c2.agents[c2.routing[role]||route]||c2.agents.dialog,aiCfg());}catch(e){aiAudit('Automatic model check failed: '+e.message,'WARN');}
+  }
   if(!M.primary)throw new Error('No model is configured for '+label+'. Open AI CONTROLS → API and run VERIFY MODELS (or type a model name).');
   const roleGuide=String((c.agentInstructions&&c.agentInstructions[role])||'').trim();
   if(roleGuide)system=String(system||'')+'\n\nHOST OVERSEER GUIDANCE FOR THIS SPECIALIST (follow when relevant):\n'+roleGuide;
@@ -12225,6 +12237,7 @@ function agentMark(role, status, err){
   if(isClient()){body.appendChild(h('div',{class:'note warn',text:'The API panel is restricted to the host.'}));return;}
   const c=aiAgentConfig(),base=aiCfg(),b=aiBudget(),u=aiUsageLoad(),rt=agentRuntime(),ver=base.verified||null;
   const line=(t,cls)=>body.appendChild(h('div',{class:'logrow '+(cls||'system'),text:t}));
+  if(window.VND&&window.VND.apiKeyBox)window.VND.apiKeyBox(body);
   body.appendChild(h('h3',{text:'API · MODELS, BUDGET & USAGE'}));
   body.appendChild(h('div',{class:'note',text:'Agents are routed by tier: FLASH for Dialogue, World, Scene and NPC Forge; FLASH-LITE for Bark, Memory and Newspaper. Model IDs are read from the provider, never assumed. The request budget below is enforced before every call so the free Gemini quota is not burned; set the limits to match your current quota at ai.google.dev.'}));
   // ---- provider / tiers ----
@@ -12245,6 +12258,12 @@ function agentMark(role, status, err){
    ovBtn('RE-PICK BEST',async()=>{try{const v=await aiVerifyModels(true);toast('Re-picked: FLASH '+(v.flash||'none')+' · LITE '+(v.lite||'none'),'info');}catch(e){toast('Verify failed: '+e.message,'warn');}renderTab();}),
    ovBtn('TEST TIERS (2 requests)',async()=>{try{const r=await aiTestTiers();toast('FLASH '+(r.flash.ok?'OK':'failed')+' · LITE '+(r.lite.ok?'OK':'failed'),r.flash.ok&&r.lite.ok?'info':'warn');}catch(e){toast(e.message,'warn');}renderTab();}),
    ovBtn('SAVE TIER MODELS',()=>{const x=aiCfg();x.tiers={flash:fl.value.trim(),lite:li.value.trim()};aiSaveCfg(x);aiAudit('Tier models saved by host');toast('Tier models saved.','info');renderTab();})));
+  body.appendChild(h('h3',{text:'MOVE AI SETTINGS TO ANOTHER BROWSER / DEVICE'}));
+  line('The API key and model settings are stored only in the browser (and file location) where you typed them. A different browser, a re-downloaded copy of this file in another place, or a private window starts empty - which makes the AI look broken in multiplayer when you host from there. Export here, import there.','system');
+  const xfer=h('textarea',{class:'ov-in',style:{width:'100%',minHeight:'54px'},placeholder:'Exported settings appear here. To import, paste exported settings here and press IMPORT.'});body.appendChild(xfer);
+  body.appendChild(h('div',{class:'ov-btns'},
+   ovBtn('EXPORT (contains your API key)',()=>{xfer.value=JSON.stringify(aiCfg());try{navigator.clipboard&&navigator.clipboard.writeText(xfer.value).catch(()=>{});}catch(e){}toast('Settings exported - keep them private.','info');}),
+   ovBtn('IMPORT',()=>{try{const o=JSON.parse(xfer.value.trim());if(!o||typeof o!=='object'||Array.isArray(o))throw new Error('not a settings object');aiSaveCfg(Object.assign({},aiCfg(),o));aiAudit('AI settings imported by host');toast('Settings imported.','info');renderTab();}catch(e){toast('Import failed: '+e.message,'warn');}})));
   // ---- budget ----
   body.appendChild(h('h3',{text:'REQUEST BUDGET (enforced before every call)'}));
   line('Last minute: '+b.rpm+' / '+(b.rpmLimit||'∞')+' · last 24 h: '+b.day+' / '+(b.dayLimit||'∞')+(aiLive.waiting?' · '+aiLive.waiting+' agent(s) waiting for budget':''),(b.rpmLimit&&b.rpm>=b.rpmLimit)||(b.dayLimit&&b.day>=b.dayLimit)?'warn':'system');
@@ -12454,7 +12473,7 @@ tabSignature=function(){return ui.tab==='aicontrols'||ui.tab==='aibrain'?String(
 window.VND=Object.assign(window.VND||{},{
   aiCall, aiAudit, setAiReasoning: aiSetReasoning, aiBrainTab: aiBrainTab,
   aiCfg, aiAgentConfig,
-  aiParseJson, aiKnowledgeFor, aiCanonFor, aiKnowledgeTab, aiRecordEvent, aiFileContext, aiCancel, aiBudget, aiUsage: aiUsageLoad, aiVerifyModels, aiTestTiers, aiApiTab, agentIsAllowed, agentRuntime,
+  aiParseJson, aiKnowledgeFor, aiCanonFor, aiKnowledgeTab, aiRecordEvent, aiFileContext, aiCancel, aiBudget, aiUsage: aiUsageLoad, aiVerifyModels, aiTestTiers, aiTranscribe, aiApiTab, agentIsAllowed, agentRuntime,
   aiModelFor: role=>{const c=aiAgentConfig(),route=c.routing[role]||role;return aiModelsFor(c,route,c.agents[route]||c.agents.dialog,aiCfg());}
 });
 // Expose on the global so later modules (and bare aiCall / aiAudit / aiCfg calls) can find them.
@@ -13104,8 +13123,9 @@ async function npcChat(npcKey,text,who){
   chatBusy[npcKey]=true;
   try{await talkNpc(m.id,text,{who,shared:true});return {ok:true};}
   catch(e){
-    const paused=/PAUSED|DISABLED|Configure|No model/i.test(String(e.message));
-    addEntry(m.id,{role:'system',text:paused?'('+m.name+' does not answer. The Overseer has dialogue switched off right now.)':'('+m.name+' says nothing.)',shared:true});save();
+    const unset=/Configure the endpoint|No model|API key|HTTP 40[13]/i.test(String(e.message)),paused=/PAUSED|DISABLED/i.test(String(e.message));
+    addEntry(m.id,{role:'system',text:unset?'('+m.name+' cannot answer: the Overseer\'s AI is not set up or the API key was rejected. The Overseer has been notified.)':paused?'('+m.name+' does not answer. The Overseer has dialogue switched off right now.)':'('+m.name+' says nothing.)',shared:true});save();
+    if(unset&&Date.now()-(chatLast.__unsetNote||0)>60000){chatLast.__unsetNote=Date.now();if(typeof osNotice==='function')osNotice('A player tried to talk to '+m.name+' but the AI is not working: '+String(e.message).slice(0,140)+' - check AI CONTROLS -> API on THIS device.');}
     if(typeof aiAudit==='function')aiAudit('Player chat with '+m.name+' failed: '+e.message,'WARN');
     return {ok:false,msg:e.message};
   }
@@ -14155,6 +14175,7 @@ document.head.appendChild(st);
   const vcOf = sc => (sc.vc = sc.vc || { log: [], sug: [], speaking: {} });
   const rid = () => Math.random().toString(36).slice(2, 10);
   const jacc = (a, b) => { const A = new Set(norm(a).split(' ').filter(Boolean)), B = new Set(norm(b).split(' ').filter(Boolean)); if (!A.size || !B.size) return 0; let i = 0; A.forEach(w => { if (B.has(w)) i++; }); return i / (A.size + B.size - i); };
+  const fresh = v => v === 1 || now() - v < 3500;      // the host sends 1 for 'speaking now' (clients' clocks differ from the host's)
   const hash = s => { let x = 2166136261; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); } x ^= x >>> 16; x = Math.imul(x, 0x85ebca6b); x ^= x >>> 13; x = Math.imul(x, 0xc2b2ae35); x ^= x >>> 16; return (x >>> 0) / 4294967295; };
 
   /* ---------------- classification ---------------- */
@@ -14414,6 +14435,11 @@ document.head.appendChild(st);
     if (msg.kind === 'vad') { if (sc) setSpeaking(sc, 'pc:' + m.id, !!msg.on); return; }
     if (!m) { try { conn.send({ t: 'toast', msg: 'Pick a character before speaking.', kind: 'warn' }); } catch (e) {} return; }
     if (!sc) { try { conn.send({ t: 'toast', msg: m.name + ' is not in a scene, so nobody can hear you.', kind: 'warn' }); } catch (e) {} return; }
+    if (msg.kind === 'audio') {
+      if (typeof msg.b64 !== 'string' || msg.b64.length > 700000 || !/^[A-Za-z0-9+/=]+$/.test(msg.b64.slice(0, 4000))) return;
+      const AK = pub + ':a'; rate[AK] = (rate[AK] || []).filter(t => tn - t < 10000); if (rate[AK].length >= 4) return; rate[AK].push(tn);
+      SEG.q.push({ b64: msg.b64, pc: { sceneId: sc.id, uid: 'pc:' + m.id, id: 'c' + pub + ':' + String(msg.id || '').slice(0, 24) }, conn }); if (SEG.q.length > 4) SEG.q.shift(); pump(); return;
+    }
     if (typeof msg.text !== 'string') return;
     ingest({ sceneId: sc.id, uid: 'pc:' + m.id, text: msg.text.slice(0, 280), src: msg.src === 'text' ? 'text' : 'voice', id: 'c' + pub + ':' + String(msg.id || '').slice(0, 24) });
   }
@@ -14424,6 +14450,9 @@ document.head.appendChild(st);
   const MIC = { armed: false, muted: false, rec: null, stamp: null, buf: '', interim: '', timer: null, fails: 0, err: '', level: 0, bound: null, stream: null, ana: null, vadOn: false, vadHold: 0, stopped: false, sttOk: false, ignore: false };
   VC.mic = MIC;
   const SRC = () => window.SpeechRecognition || window.webkitSpeechRecognition;
+  /* The recogniser can be restarted (clean, but some browsers re-ask for the microphone on every start - always on file:// pages) or left running while the
+     in-progress phrase is skipped (no restart, no prompt). KB.keepRec selects the second. */
+  function restartOrSkip() { if (KB.keepRec) { MIC.minIdx = (MIC.lastIdx || 0) + 1; MIC.interim = ''; } else { ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} } }
   function ignoreBriefly() { MIC.ignore = true; setTimeout(() => { MIC.ignore = false; }, 150); }
   function filler(t) { return /^(um+|uh+|hmm+|ah+|er+|mm+)\W*$/i.test(t.trim()); }
   function onFinal(txt, conf) {
@@ -14434,6 +14463,7 @@ document.head.appendChild(st);
     clearTimeout(MIC.timer); MIC.timer = setTimeout(flush, 900);
   }
   function flush() {
+    segFlush();
     clearTimeout(MIC.timer); MIC.timer = null;
     const text = esc(MIC.buf + (MIC.interim ? ' ' + MIC.interim : '')); MIC.buf = ''; MIC.interim = '';
     const sp = MIC.stamp || currentSpeaker(); MIC.stamp = null;
@@ -14446,17 +14476,20 @@ document.head.appendChild(st);
   function checkSwitch() {
     if (!MIC.armed) return false;
     const sp = currentSpeaker(); let sw = false;
-    if (MIC.stamp && MIC.stamp.key !== sp.key) { sw = true; if (MIC.buf || MIC.interim) flush(); else MIC.stamp = null; ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} }
+    if (SEG.inSpeech && SEG.stamp && SEG.stamp.key !== sp.key) { sw = true; endSeg(); }
+    if (MIC.stamp && MIC.stamp.key !== sp.key) { sw = true; if (MIC.buf || MIC.interim) flush(); else MIC.stamp = null; restartOrSkip(); }
     bindControl(); return sw;
   }
   VC.checkSwitch = checkSwitch;
-  VC.feedStt = (txt, isFinal, conf) => { if (MIC.ignore) return; if (checkSwitch()) return; if (isFinal) onFinal(txt, conf); else { if (!MIC.stamp) MIC.stamp = currentSpeaker(); MIC.interim = esc(txt); } };
+  VC.feedStt = (txt, isFinal, conf) => { if (MIC.ignore || (MIC.muted && !MIC.releasing)) return; if (checkSwitch()) return; MIC.vadHold = now(); if (isFinal) onFinal(txt, conf); else { if (!MIC.stamp) MIC.stamp = currentSpeaker(); MIC.interim = esc(txt); } };
   function startRec() {
+    if (KB.engine !== 'browser') { MIC.sttOk = KB.engine === 'gemini' && !!SEG.proc; return; }
     const SR = SRC(); const c = cfg();
     if (!SR || !c.stt) { MIC.sttOk = false; if (!SR) MIC.err = 'Speech recognition is not supported in this browser (use Chrome or Edge) - type in the SAY box instead.'; return; }
     try {
       const r = new SR(); r.continuous = true; r.interimResults = true; r.lang = c.lang || 'en-US'; MIC.rec = r; MIC.sttOk = true; MIC.ignore = false;
-      r.onresult = e => { for (let i = e.resultIndex; i < e.results.length; i++) { const res = e.results[i]; VC.feedStt(res[0].transcript, res.isFinal, res[0].confidence); } };
+      MIC.minIdx = 0; MIC.lastIdx = -1;
+      r.onresult = e => { MIC.lastIdx = e.results.length - 1; for (let i = e.resultIndex; i < e.results.length; i++) { if (i < (MIC.minIdx || 0)) continue; const res = e.results[i]; VC.feedStt(res[0].transcript, res.isFinal, res[0].confidence); } };
       r.onerror = e => {
         const k = e && e.error;
         if (k === 'not-allowed' || k === 'service-not-allowed') { MIC.err = 'Microphone permission was denied. Allow it in the browser address bar, then press MIC ON. Text (SAY) still works.'; MIC.stopped = true; disarmMic(true); }
@@ -14465,7 +14498,7 @@ document.head.appendChild(st);
         else if (k !== 'no-speech' && k !== 'aborted') { MIC.fails++; MIC.err = 'Speech recognition error: ' + k; }
         updatePanel();
       };
-      r.onend = () => { MIC.rec = null; MIC.ignore = false; if (MIC.armed && !MIC.muted && !MIC.stopped && !MIC.releasing) { if (MIC.fails >= 5) { MIC.err = 'Speech recognition keeps failing - switched to text (SAY). Press MIC ON to retry.'; MIC.sttOk = false; MIC.fails = 0; updatePanel(); return; } setTimeout(() => { if (MIC.armed && !MIC.muted && !MIC.rec) startRec(); }, 400 + MIC.fails * 600); } };
+      r.onend = () => { MIC.rec = null; MIC.ignore = false; if (MIC.armed && (!MIC.muted || KB.keepRec) && !MIC.stopped && !MIC.releasing) { if (MIC.fails >= 5) { MIC.err = 'Speech recognition keeps failing - switched to text (SAY). Press MIC ON to retry.'; MIC.sttOk = false; MIC.fails = 0; updatePanel(); return; } setTimeout(() => { if (MIC.armed && (!MIC.muted || KB.keepRec) && !MIC.rec) startRec(); }, 400 + MIC.fails * 600); } };
       r.start();
     } catch (e) { MIC.err = 'Could not start speech recognition: ' + (e.message || e); MIC.sttOk = false; }
   }
@@ -14474,22 +14507,80 @@ document.head.appendChild(st);
     if (!cfg().on) { MIC.err = 'Voice chat is switched off in the host settings.'; updatePanel(); return false; }
     MIC.armed = true; MIC.muted = KB.mode === 'ptt' && !KB.down; MIC.stopped = false; MIC.err = ''; MIC.fails = 0; MIC.releasing = false;
     bindControl();
-    if (!MIC.muted) startRec();
     try { await startAudio(); } catch (e) { MIC.err = (MIC.err ? MIC.err + ' ' : '') + 'Voice audio unavailable (' + ((e && e.name) || e) + ') - speech-to-text and the SAY box still work.'; }
+    if (MIC.armed && KB.engine === 'gemini') segStart();
+    if (MIC.armed && (!MIC.muted || KB.keepRec) && !MIC.rec) startRec();
     updatePanel(); return true;
   }
   function disarmMic(silent) {
     flush(); MIC.armed = false; MIC.ignore = true; try { MIC.rec && MIC.rec.abort(); } catch (e) {} MIC.rec = null;
-    stopAudio(); unbindControl(); MIC.vadOn = false;
+    segStop(); stopAudio(); unbindControl(); MIC.vadOn = false;
     if (host()) { const sc = activeScene(); if (sc) { const sp = currentSpeaker(); if (sp.uid) setSpeaking(sc, sp.uid, false); } }
     updatePanel();
   }
   function setMuted(m) {
-    MIC.muted = !!m; if (MIC.stream) MIC.stream.getAudioTracks().forEach(t => { t.enabled = !MIC.muted; });
-    if (MIC.muted) { flush(); ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} } else if (MIC.armed && !MIC.rec) startRec();
+    MIC.muted = !!m; if (m) segFlush(); if (MIC.stream) MIC.stream.getAudioTracks().forEach(t => { t.enabled = !MIC.muted; });
+    if (MIC.muted) { flush(); if (!KB.keepRec) { ignoreBriefly(); try { MIC.rec && MIC.rec.abort(); } catch (e) {} } }
+    else { if (KB.keepRec) MIC.minIdx = (MIC.lastIdx || 0) + 1; if (MIC.armed && !MIC.rec) startRec(); }          // keepRec: words spoken before unmuting belong to the phrase in progress and are skipped
     updatePanel();
   }
   VC.armMic = armMic; VC.disarmMic = disarmMic; VC.setMuted = setMuted;
+
+  /* ---------------- speech-to-text with Gemini (no browser speech service, so no repeated permission prompts) ----------------
+     The microphone stream that was already allowed once is cut into sentences by a voice-activity detector, encoded as 16 kHz WAV and sent
+     to the host's AI as one request per sentence. Players send their WAV to the host, which transcribes it with ITS key. */
+  const SEG = { proc: null, src: null, pre: [], buf: [], inSpeech: false, voiced: 0, lastVoice: 0, start: 0, stamp: null, rate: 48000, q: [], busy: false, minute: [] };
+  VC.seg = SEG;
+  function segStart() {
+    segStop(); const ctx = getCtx();
+    if (typeof ctx.createScriptProcessor !== 'function' || !MIC.stream) { MIC.err = 'This browser cannot capture audio for Gemini speech-to-text - use the SAY box, or pick another engine.'; return; }
+    SEG.rate = ctx.sampleRate || 48000; SEG.src = ctx.createMediaStreamSource(MIC.stream); SEG.proc = ctx.createScriptProcessor(4096, 1, 1);
+    SEG.proc.onaudioprocess = segChunk; SEG.src.connect(SEG.proc); SEG.proc.connect(ctx.destination); MIC.sttOk = true;
+  }
+  function segStop() { try { if (SEG.proc) { SEG.proc.onaudioprocess = null; SEG.proc.disconnect(); } if (SEG.src) SEG.src.disconnect(); } catch (e) {} SEG.proc = null; SEG.src = null; SEG.buf = []; SEG.pre = []; SEG.inSpeech = false; SEG.stamp = null; }
+  function segChunk(e) {
+    if (!MIC.armed || (MIC.muted && !MIC.releasing) || KB.engine !== 'gemini') { if (SEG.inSpeech) { SEG.inSpeech = false; SEG.buf = []; } SEG.pre = []; return; }
+    const d = e.inputBuffer.getChannelData(0), chunk = new Float32Array(d); let sum = 0; for (let i = 0; i < chunk.length; i++) sum += chunk[i] * chunk[i];
+    const rms = Math.sqrt(sum / chunk.length), tn = now();
+    if (rms > 0.035) { SEG.lastVoice = tn; SEG.voiced += chunk.length / SEG.rate; if (!SEG.inSpeech) { SEG.inSpeech = true; SEG.voiced = 0; SEG.start = tn; SEG.buf = SEG.pre.slice(); SEG.stamp = currentSpeaker(); } }
+    if (SEG.inSpeech) { SEG.buf.push(chunk); if (tn - SEG.lastVoice > 800 || tn - SEG.start > 25000) endSeg(); }
+    else { SEG.pre.push(chunk); if (SEG.pre.length > 3) SEG.pre.shift(); }
+  }
+  function segFlush() { if (SEG.inSpeech) endSeg(); }
+  function wavB64(chunks, rate) {
+    let n = 0; chunks.forEach(c => { n += c.length; }); const all = new Float32Array(n); let o = 0; chunks.forEach(c => { all.set(c, o); o += c.length; });
+    const ratio = rate / 16000, m = Math.floor(n / ratio), pcm = new Int16Array(m);
+    for (let i = 0; i < m; i++) { const a = Math.floor(i * ratio), b = Math.min(n, Math.max(a + 1, Math.floor((i + 1) * ratio))); let t = 0; for (let j = a; j < b; j++) t += all[j]; const v = Math.max(-1, Math.min(1, t / (b - a))); pcm[i] = v < 0 ? v * 32768 : v * 32767; }
+    const buf = new ArrayBuffer(44 + m * 2), dv = new DataView(buf), w = (off, str) => { for (let i = 0; i < str.length; i++) dv.setUint8(off + i, str.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + m * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true); dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, m * 2, true);
+    new Int16Array(buf, 44).set(pcm); const u8 = new Uint8Array(buf); let bin = ''; for (let i = 0; i < u8.length; i += 8192) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+    return { b64: btoa(bin), secs: m / 16000 };
+  }
+  VC.wavB64 = wavB64;
+  function endSeg() {
+    const chunks = SEG.buf, sp = SEG.stamp || currentSpeaker(); SEG.inSpeech = false; SEG.buf = []; SEG.stamp = null; SEG.pre = [];
+    if (!chunks.length) return; const w = wavB64(chunks, SEG.rate); if (w.secs < 0.45 || SEG.voiced < 0.25) return;       // coughs and clicks
+    submitAudio(w.b64, sp, w.secs);
+  }
+  function cleanTranscript(t) { t = esc(t).replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, ''); if (!t || /^[\[(]?\s*(no (intelligible )?(speech|words)|silence|inaudible|unintelligible|nothing)[^a-z]*[\])]?\.?$/i.test(t) || /^[\[(].*[\])]$/.test(t) || filler(t)) return ''; return t; }
+  VC.cleanTranscript = cleanTranscript;
+  async function transcribe(b64) { return cleanTranscript(await VND.aiTranscribe(b64)); }
+  function submitAudio(b64, sp, secs) {
+    if (host()) { SEG.q.push({ b64, sp }); if (SEG.q.length > 3) SEG.q.shift(); pump(); return; }
+    if (!(MP && MP.conn && MP.conn.open)) { MIC.err = 'Not connected to the host - your sentence was not sent.'; updatePanel(); return; }
+    if (b64.length > 700000) { MIC.err = 'That sentence was too long to send - speak in shorter sentences.'; updatePanel(); return; }
+    mpSend({ t: 'voice', kind: 'audio', id: rid(), b64 });
+  }
+  async function pump() {
+    if (SEG.busy) return; const job = SEG.q.shift(); if (!job) return; SEG.busy = true;
+    try {
+      const tn = now(); SEG.minute = SEG.minute.filter(t => tn - t < 60000); if (SEG.minute.length >= 14) throw new Error('too many sentences per minute - slow down');
+      SEG.minute.push(tn); const text = await transcribe(job.b64); MIC.err = '';
+      if (text) { if (job.pc) ingest({ sceneId: job.pc.sceneId, uid: job.pc.uid, text, src: 'voice', id: job.pc.id }); else submit(text, job.sp, 'voice'); }
+    } catch (e) { const m = 'Gemini speech-to-text failed: ' + String(e.message || e).slice(0, 140); if (job.conn) { try { job.conn.send({ t: 'toast', msg: m, kind: 'warn' }); } catch (x) {} } else MIC.err = m; }
+    SEG.busy = false; updatePanel(); if (SEG.q.length) pump();
+  }
+  VC.pump = pump;
 
   /* host-controlled flag follows the bound NPC (restored on unbind, and after a crash) */
   function bindControl() {
@@ -14502,11 +14593,12 @@ document.head.appendChild(st);
   function unbindControl() {
     const c = cfg(); (c.autoCtl || []).forEach(cid => { try { VND.setNpcHostControl(cid, false); } catch (e) {} }); c.autoCtl = []; MIC.bound = null;
   }
+  let pruned = false;
   function watch() {
     if (!S) return;
     try {
       checkSwitch();
-      if (host()) { ensureHostAudio(); const sc = activeScene(); if (sc) { const v = vcOf(sc); Object.keys(v.speaking).forEach(k => { const m = /^pc:(.+)$/.test(k) && S.assign[k.slice(3)]; const off = m && m.pub && !(MP.players[m.pub] && MP.players[m.pub].online); if (off || now() - v.speaking[k] > 3500) delete v.speaking[k]; }); } audioHealth(); }
+      if (host()) { ensureHostAudio(); const sc = activeScene(); if (sc) { const v = vcOf(sc); Object.keys(v.speaking).forEach(k => { const m = /^pc:(.+)$/.test(k) && S.assign[k.slice(3)]; const off = m && m.pub && !(MP.players[m.pub] && MP.players[m.pub].online); if (off || !fresh(v.speaking[k])) { delete v.speaking[k]; pruned = true; } }); if (pruned) { pruned = false; try { mpSyncSoon(); } catch (e) {} } } audioHealth(); }
       else clientAudioRetry();
       vadTick(); updatePanel();
     } catch (e) { console.error('voice watch', e); }
@@ -14516,22 +14608,31 @@ document.head.appendChild(st);
   const A = { ctx: null, in: {}, out: {}, hostSrc: null, hooked: null, call: null, tries: 0, els: {}, log: [] };
   VC.audio = A;
   const getCtx = () => { if (!A.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) throw new Error('no WebAudio'); A.ctx = new AC(); } try { A.ctx.resume && A.ctx.resume(); } catch (e) {} return A.ctx; };
+  ['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, () => { try { if (A.ctx && A.ctx.state === 'suspended') A.ctx.resume(); Object.keys(A.els).forEach(k => { const e = A.els[k]; if (e && e.paused && e.srcObject && e.play) e.play().catch(() => {}); }); } catch (e) {} }, true));
   async function startAudio() {
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) throw new Error('no getUserMedia');
-    MIC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    clearTimeout(A.keepT);
+    if (A.keep && A.keep.getAudioTracks().some(t => t.readyState !== 'ended')) MIC.stream = A.keep;          // one permission prompt: the same microphone stream is reused every time the mic is switched on
+    else { MIC.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); A.keep = MIC.stream; }
     MIC.stream.getAudioTracks().forEach(t => { t.enabled = !MIC.muted; });
     MIC.stream.getAudioTracks().forEach(t => { t.onended = () => { if (MIC.armed) { MIC.err = 'The microphone was disconnected.'; disarmMic(true); } }; });
     const ctx = getCtx(); const src = ctx.createMediaStreamSource(MIC.stream); const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an); MIC.ana = an; MIC.src = src;
     if (host()) { A.hostSrc = src; Object.keys(A.out).forEach(pub => { try { src.connect(A.out[pub].dest); } catch (e) {} }); }
     else callHost();
   }
+  function releaseKeep() { try { A.keep && A.keep.getTracks().forEach(t => t.stop()); } catch (e) {} A.keep = null; }
   function stopAudio() {
     try { if (host() && A.hostSrc) Object.keys(A.out).forEach(pub => { try { A.hostSrc.disconnect(A.out[pub].dest); } catch (e) {} }); } catch (e) {}
     A.hostSrc = null;
-    try { MIC.stream && MIC.stream.getTracks().forEach(t => t.stop()); } catch (e) {} MIC.stream = null; MIC.ana = null; MIC.src = null;
+    try { MIC.stream && MIC.stream.getAudioTracks().forEach(t => { t.enabled = false; }); } catch (e) {}                 // silenced, not released: re-arming must not ask the browser again
+    clearTimeout(A.keepT); A.keepT = setTimeout(releaseKeep, 600000);                                              // released after 10 idle minutes so the browser's recording indicator goes away
+    MIC.stream = null; MIC.ana = null; MIC.src = null;
     try { A.call && A.call.close(); } catch (e) {} A.call = null;
   }
   function vadTick() {
+    if (MIC.armed && !MIC.muted && !MIC.ana) {            // no audio analyser (e.g. only speech recognition could start): the recogniser's activity drives the indicator
+      const on = now() - MIC.vadHold < 1200; MIC.level = on ? 0.15 : 0; if (on !== MIC.vadOn) { MIC.vadOn = on; pushVad(on); } return;
+    }
     if (!MIC.armed || !MIC.ana || MIC.muted) { if (MIC.vadOn) { MIC.vadOn = false; pushVad(false); } MIC.level = 0; return; }
     const buf = new Uint8Array(MIC.ana.fftSize); MIC.ana.getByteTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
     MIC.level = Math.sqrt(s / buf.length); const tn = now();
@@ -14592,10 +14693,39 @@ document.head.appendChild(st);
   function ensureListen() { if (host() || !gesture || A.call || A.tries > 6 || !MP || MP.status !== 'live' || now() - (A.lastTry || 0) < 3000 || !cfg().on) return; A.tries++; try { callHost(); } catch (e) {} }
   function clientAudioRetry() { ensureListen(); }
 
+  /* ---------------- always-visible speaking indicator ---------------- */
+  function selfUid() { try { return currentSpeaker().uid; } catch (e) { return null; } }
+  function othersSpeaking() {
+    const me = selfUid(), out = [];
+    Object.values((S && S.scenes) || {}).forEach(sc => { const v = sc && sc.vc; if (!v || !v.speaking) return; Object.keys(v.speaking).forEach(k => { if (k === me || !fresh(v.speaking[k])) return; const t = tokenOf(sc, k); if (t && !out.includes(t.name)) out.push(t.name); }); });
+    return out;
+  }
+  function updateHud() {
+    if (!S || !document.body) return;
+    let el = document.getElementById('vcHud');
+    if (!el) {
+      const st = document.createElement('style'); st.textContent = '@keyframes vcPulse{0%{box-shadow:0 0 0 0 rgba(111,211,111,.8)}100%{box-shadow:0 0 0 14px rgba(111,211,111,0)}}#vcHud{position:fixed;left:12px;bottom:12px;z-index:99990;font:12px/1.35 monospace;color:#cfe;background:rgba(10,16,10,.92);border:1px solid #345;padding:6px 10px;cursor:pointer;user-select:none;max-width:260px}#vcHud .d{display:inline-block;width:11px;height:11px;border-radius:50%;background:#666;margin-right:7px;vertical-align:-1px}#vcHud.on .d{background:#6fd36f}#vcHud.talk{border-color:#6fd36f}#vcHud.talk .d{animation:vcPulse .9s infinite}#vcHud.mute .d{background:#d9a441}';
+      document.head.appendChild(st);
+      el = document.createElement('div'); el.id = 'vcHud'; el.title = 'Click to turn the microphone on / off'; el.onclick = () => { MIC.armed ? disarmMic() : armMic(); };
+      el.innerHTML = '<div><span class="d"></span><b id="vcHudMain"></b></div><div id="vcHudSub" style="color:#9bc59b"></div>'; document.body.appendChild(el);
+    }
+    if (!cfg().on) { el.style.display = 'none'; return; } el.style.display = '';
+    const key = keyLabel(KB.key); let main, cls = '';
+    if (!MIC.armed) main = 'MIC OFF - press ' + key;
+    else if (MIC.muted) { main = KB.mode === 'ptt' ? 'MIC READY - hold ' + key : 'MIC MUTED - press ' + key; cls = 'mute'; }
+    else if (MIC.vadOn) { main = 'YOU ARE SPEAKING'; cls = 'on talk'; }
+    else { main = 'MIC LIVE'; cls = 'on'; }
+    el.className = cls; document.getElementById('vcHudMain').textContent = main;
+    const o = othersSpeaking(), me = currentSpeaker();
+    document.getElementById('vcHudSub').textContent = (MIC.armed && !MIC.muted ? 'as ' + me.name : '') + (o.length ? (MIC.armed && !MIC.muted ? ' · ' : '') + '🔊 ' + o.join(', ') + ' speaking' : '');
+  }
+  VC.updateHud = updateHud;
+
   /* ---------------- UI ---------------- */
   function who() { const sp = currentSpeaker(); return sp; }
   function micState() { if (!MIC.armed) return ['OFF', '#888']; if (MIC.muted) return KB.mode === 'ptt' ? ['READY - hold ' + keyLabel(KB.key), '#d9a441'] : ['MUTED', '#d9a441']; return [MIC.vadOn ? 'SPEAKING' : 'LIVE', MIC.vadOn ? '#6fd36f' : '#9bc59b']; }
   function updatePanel() {
+    try { updateHud(); } catch (e) {}
     const g = id => document.getElementById(id); if (!g('vcStatus')) return;
     try {
       const sp = currentSpeaker(), st = micState();
@@ -14605,10 +14735,12 @@ document.head.appendChild(st);
       g('vcBtnKey').textContent = KB.rebinding ? 'PRESS A KEY… (Esc cancels)' : 'KEY: ' + keyLabel(KB.key); g('vcMode').value = KB.mode;
       g('vcKeyHint').textContent = KB.mode === 'ptt' ? 'Hold ' + keyLabel(KB.key) + ' to talk; release to send. Works anywhere except while typing.' : 'Press ' + keyLabel(KB.key) + ' to turn the mic on, again to mute / unmute. Works anywhere except while typing.';
       g('vcLink').textContent = host() ? 'Voice link: ' + Object.keys(A.in).length + ' player(s) connected by audio' + (MIC.armed ? ' · everyone hears you' : '') : (A.call ? 'Voice link: connected - you hear the host and other players' + (A.listenOnly ? ' (listening)' : '') : (MP && MP.status === 'live' ? 'Voice link: connecting after your first click or key press…' : 'Voice link: not connected'));
+      { const a = g('vcAi'); if (a) { const c0 = (typeof aiCfg === 'function' ? aiCfg() : {}); const okc = !!(c0.endpoint && c0.key); a.textContent = okc ? 'AI: configured in this browser (NPC reactions can use it)' : 'AI: NOT configured in THIS browser - NPC reactions use rule-based lines, players\' NPC chat will not answer and Gemini speech-to-text is unavailable. Set the key in AI CONTROLS -> API (stored per browser).'; a.style.color = okc ? '#9bc59b' : '#e07a5f'; } }
+      { const eh = g('vcEngHint'); if (eh) { g('vcEng').value = KB.engine; eh.textContent = KB.engine === 'gemini' ? 'Each spoken sentence is sent to the HOST\'s Gemini key (1 request per sentence, uses your free quota). The microphone is allowed once; no browser speech service is used.' : KB.engine === 'browser' ? 'Uses Chrome\'s speech service. On a file:// page Chrome asks for the microphone each time it restarts - serve the page over https to stop that.' : 'No transcription: players can still talk to each other; type to talk to NPCs.'; } }
       g('vcErr').textContent = MIC.err || ''; g('vcErr').style.display = MIC.err ? '' : 'none';
       g('vcBtnMic').textContent = MIC.armed ? 'MIC OFF' : 'MIC ON'; g('vcBtnMute').style.display = MIC.armed ? '' : 'none'; g('vcBtnMute').textContent = MIC.muted ? 'UNMUTE' : 'MUTE';
       const sc = sceneById(VC.sceneId); const v = sc && sc.vc;
-      const names = v ? Object.keys(v.speaking || {}).filter(k => now() - v.speaking[k] < 3500).map(k => { const t = tokenOf(sc, k); return t ? t.name : k; }) : [];
+      const names = v ? Object.keys(v.speaking || {}).filter(k => fresh(v.speaking[k])).map(k => { const t = tokenOf(sc, k); return t ? t.name : k; }) : [];
       g('vcNow').textContent = names.length ? 'Speaking now: ' + names.join(', ') : 'Nobody speaking';
       const lg = g('vcLog'); if (lg && v) { lg.innerHTML = ''; (v.log || []).slice(-8).forEach(r => { const d = document.createElement('div'); d.style.cssText = 'margin:2px 0;font-size:12px;' + (r.src === 'npc' ? 'color:#9bc59b' : r.kind === 'narration' ? 'color:#aaa' : ''); d.textContent = r.who + (r.mode !== 'talk' ? ' (' + r.mode + ')' : '') + ': ' + r.text + (r.src === 'npc' ? (r.local ? '  [rule-based]' : '') : '  · ' + (r.heard || []).length + ' heard'); lg.appendChild(d); }); lg.scrollTop = lg.scrollHeight; }
       const sg = g('vcSug'); if (sg && host() && v) { sg.innerHTML = ''; (v.sug || []).slice(-3).forEach(s => { const d = document.createElement('div'); d.style.cssText = 'font-size:12px;color:#d9a441'; d.textContent = '• ' + s.text; sg.appendChild(d); }); }
@@ -14628,6 +14760,12 @@ document.head.appendChild(st);
     b.appendChild(h('div', { class: 'tc-row wrap', style: { alignItems: 'center' } }, h('span', { text: 'Mode', style: { fontSize: '12px' } }), modeSel,
       h('button', { id: 'vcBtnKey', class: 'btn sm', onclick: () => { KB.rebinding = true; updatePanel(); } })));
     b.appendChild(mk('vcKeyHint', 'div', { fontSize: '11px', color: '#9aa', margin: '2px 0' }));
+    { const eng = h('select', { id: 'vcEng', class: 'ov-in', style: { width: 'auto' }, onchange: () => { KB.engine = eng.value; saveKb(); if (MIC.armed) { MIC.rec && (MIC.ignore = true, MIC.rec.abort && MIC.rec.abort()); segStop(); if (KB.engine === 'gemini') segStart(); else if (KB.engine === 'browser') { MIC.ignore = false; startRec(); } } updatePanel(); } },
+        h('option', { value: 'gemini', text: 'Gemini (host API key, one permission prompt)' }), h('option', { value: 'browser', text: 'Browser speech service' }), h('option', { value: 'off', text: 'Off (audio chat + typing only)' })); eng.value = KB.engine;
+      b.appendChild(h('div', { class: 'tc-row wrap', style: { alignItems: 'center' } }, h('span', { text: 'Speech-to-text', style: { fontSize: '12px' } }), eng));
+      b.appendChild(mk('vcEngHint', 'div', { fontSize: '11px', color: '#9aa', margin: '2px 0' })); }
+    { const cb = h('input', { id: 'vcKeep', type: 'checkbox' }); cb.checked = !!KB.keepRec; cb.onchange = () => { KB.keepRec = cb.checked; saveKb(); updatePanel(); };
+      b.appendChild(h('label', { style: { fontSize: '11px', color: '#9aa', display: 'block', margin: '2px 0' }, title: 'Browsers ask for microphone permission each time speech recognition starts on a file:// page. With this on, recognition starts once when you switch the mic on and keeps running; muted speech is ignored.' }, cb, ' Keep speech recognition running (avoids repeated permission prompts; audio keeps going to the browser\'s speech service while the mic is on, even if muted)')); }
     b.appendChild(mk('vcLink', 'div', { fontSize: '11px', color: '#9aa', margin: '2px 0' }));
     const inp = h('input', { class: 'ov-in', style: { width: '100%' }, placeholder: 'SAY (typed fallback) - prefix "whisper:" or "shout:"', maxlength: 280 });
     const send = () => { const t = inp.value.trim(); if (!t) return; if (!cfg().on && isHost) { toast('Voice chat is switched off in the settings.', 'warn'); return; } VC.say(t); inp.value = ''; };
@@ -14637,6 +14775,7 @@ document.head.appendChild(st);
     b.appendChild(mk('vcLog', 'div', { maxHeight: '120px', overflowY: 'auto', border: '1px solid #234', padding: '3px', background: 'rgba(0,0,0,.25)' }));
     if (isHost) {
       b.appendChild(mk('vcSug', 'div', { margin: '3px 0' }));
+      b.appendChild(mk('vcAi', 'div', { fontSize: '11px', margin: '2px 0' }));
       const set = sceneSection('VOICE SETTINGS (Overseer)', false), sb = set.b;
       const row = (label, el) => sb.appendChild(h('div', { class: 'ov-row' }, h('span', { text: label }), el));
       const chk = (label, key) => { const e = h('input', { type: 'checkbox' }); e.checked = !!c[key]; e.onchange = () => { cfg()[key] = e.checked; markDirty(); updatePanel(); }; row(label, e); };
@@ -14655,9 +14794,9 @@ document.head.appendChild(st);
   VC.voiceSection = voiceSection;
 
   /* ---------------- keybind: toggle or push-to-talk (per device) ---------------- */
-  const KB = { key: 'KeyV', mode: 'toggle', down: false, rebinding: false, rel: null };
-  try { const o = JSON.parse(localStorage.getItem('vnd.voice.keys') || '{}'); if (typeof o.key === 'string' && o.key) KB.key = o.key; if (o.mode === 'ptt' || o.mode === 'toggle') KB.mode = o.mode; } catch (e) {}
-  const saveKb = () => { try { localStorage.setItem('vnd.voice.keys', JSON.stringify({ key: KB.key, mode: KB.mode })); } catch (e) {} };
+  const KB = { key: 'KeyV', mode: 'toggle', down: false, rebinding: false, rel: null, engine: (typeof location !== 'undefined' && location.protocol === 'file:') ? 'gemini' : 'browser', keepRec: (typeof location !== 'undefined' && location.protocol === 'file:') };
+  try { const o = JSON.parse(localStorage.getItem('vnd.voice.keys') || '{}'); if (typeof o.key === 'string' && o.key) KB.key = o.key; if (o.mode === 'ptt' || o.mode === 'toggle') KB.mode = o.mode; if (typeof o.keepRec === 'boolean') KB.keepRec = o.keepRec; if (['browser', 'gemini', 'off'].includes(o.engine)) KB.engine = o.engine; } catch (e) {}
+  const saveKb = () => { try { localStorage.setItem('vnd.voice.keys', JSON.stringify({ key: KB.key, mode: KB.mode, keepRec: KB.keepRec, engine: KB.engine })); } catch (e) {} };
   const keyLabel = c => String(c).replace(/^Key/, '').replace(/^Digit/, '').replace('Backquote', '`').replace('Semicolon', ';').replace('Quote', "'").replace('Comma', ',').replace('Period', '.').replace('Slash', '/').replace('Backslash', '\\').replace('Space', 'Space');
   const RESERVED = new Set(['Escape', 'Tab', 'Enter', 'Backspace', 'MetaLeft', 'MetaRight', 'ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'Equal', 'Minus', 'Digit0']);
   const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
@@ -14674,7 +14813,7 @@ document.head.appendChild(st);
   function pttUp() {
     KB.down = false; if (!MIC.armed) return; clearTimeout(KB.rel);
     MIC.releasing = true;                                       // keep the tail of the sentence: stop() delivers the final transcript, abort() would throw it away
-    KB.rel = setTimeout(() => { try { MIC.rec && MIC.rec.stop(); } catch (e) {} setTimeout(() => { MIC.releasing = false; if (KB.down) return; flush(); setMuted(true); }, 600); }, 250);
+    KB.rel = setTimeout(() => { try { if (!KB.keepRec) MIC.rec && MIC.rec.stop(); } catch (e) {} setTimeout(() => { MIC.releasing = false; if (KB.down) return; flush(); setMuted(true); }, 600); }, 250);
   }
   function setMode(m) { if (m !== 'ptt' && m !== 'toggle') return; KB.mode = m; saveKb(); if (MIC.armed) { if (m === 'ptt' && !KB.down) setMuted(true); else if (m === 'toggle') setMuted(false); } updatePanel(); }
   window.addEventListener('keydown', e => {
@@ -14688,20 +14827,52 @@ document.head.appendChild(st);
   window.addEventListener('blur', () => { if (KB.down) pttUp(); });
   VC.kb = KB; VC.toggleKey = toggleKey; VC.pttDown = pttDown; VC.pttUp = pttUp; VC.setMode = setMode;
 
+  /* ---------------- host: quick API key box (MULTI tab + voice panel) ---------------- */
+  const GEMINI = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
+  const saveCfg = c => localStorage.setItem('vnd.ai.config.v1', JSON.stringify(c));
+  function keyBox(parent, idp) {
+    const c0 = aiCfg(); const st = h('div', { id: idp + 'St', class: 'note', style: { fontSize: '12px' } });
+    const key = h('input', { type: 'password', class: 'ov-in', id: idp + 'Key', style: { width: '100%' }, placeholder: c0.key ? 'A key is saved - paste a new one to replace it' : 'Paste your Gemini API key (from ai.google.dev)', autocomplete: 'off' });
+    const ep = h('input', { type: 'text', class: 'ov-in', id: idp + 'Ep', style: { width: '100%' }, value: c0.endpoint || GEMINI, placeholder: 'Endpoint (OpenAI-compatible chat completions)' });
+    const show = h('label', { style: { fontSize: '11px' } }, h('input', { type: 'checkbox', onchange: e => { key.type = e.target.checked ? 'text' : 'password'; } }), ' show key');
+    const paint = (msg, bad) => { const c = aiCfg(); st.textContent = msg || (c.key ? 'API key saved in this browser' + (c.tiers && (c.tiers.flash || c.tiers.lite) ? ' · models: ' + (c.tiers.flash || '-') + ' / ' + (c.tiers.lite || '-') : ' · models not picked yet') : 'No API key saved in this browser yet.'); st.style.color = bad ? '#e07a5f' : (c.key ? '#9bc59b' : '#d9a441'); };
+    const save = async () => {
+      const k = key.value.trim(); const e = ep.value.trim() || GEMINI;
+      if (!k && !aiCfg().key) { paint('Paste the API key first.', true); return; }
+      if (k && /\s/.test(k)) { paint('A key has no spaces - check what you pasted.', true); return; }
+      if (!/^https?:\/\//i.test(e)) { paint('The endpoint must start with https://', true); return; }
+      saveCfg(Object.assign({}, aiCfg(), { endpoint: e }, k ? { key: k } : {})); key.value = ''; paint('Saved. Checking the key with the provider…');
+      try { const v = await VND.aiVerifyModels(false); try { if (typeof renderTab === 'function' && ui && ui.tab === 'aicontrols') setTimeout(renderTab, 50); } catch (x) {} paint('Key works: ' + v.count + ' models found · FLASH ' + (v.flash || 'none') + ' · LITE ' + (v.lite || 'none')); try { toast('API key saved and verified.', 'info'); } catch (x) {} }
+      catch (x) { paint('Saved, but the provider refused it: ' + String(x.message).slice(0, 160), true); }
+      key.placeholder = 'A key is saved - paste a new one to replace it'; updatePanel();
+    };
+    const del = () => { const c = aiCfg(); delete c.key; saveCfg(c); paint(); updatePanel(); try { toast('API key removed from this browser.', 'info'); } catch (x) {} };
+    key.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } });
+    parent.appendChild(st); parent.appendChild(key); parent.appendChild(show); parent.appendChild(ep);
+    parent.appendChild(h('div', { class: 'tc-row wrap' }, h('button', { class: 'btn sm grn', id: idp + 'Save', text: 'SAVE & VERIFY KEY', onclick: save }), h('button', { class: 'btn sm red', text: 'REMOVE KEY', onclick: del })));
+    parent.appendChild(h('div', { class: 'note dim', style: { fontSize: '11px' }, text: 'Stored only in this browser and used only on the host\'s device; players never see it and never need one.' }));
+    paint();
+  }
+  VC.keyBox = keyBox;
+
   /* ---------------- wiring into the existing app ---------------- */
   try {
     const _ss = sceneSide;
     sceneSide = function (side, sc, hostFlag, edit) { VC.sceneId = sc && sc.id; const r = _ss.apply(this, arguments); try { voiceSection(side, sc, hostFlag); } catch (e) { console.error('voice panel', e); } return r; };
+    VC.apiKeyBox = body => { body.appendChild(h('h3', { text: 'API KEY (HOST)' })); keyBox(body, 'apiQ'); };
+    window.VND.apiKeyBox = VC.apiKeyBox;
     const _h = hostOnMsg;
     hostOnMsg = function (conn, msg) { if (msg && msg.t === 'voice') { try { handleVoice(conn, msg); } catch (e) { console.error('voice msg', e); } return; } return _h.apply(this, arguments); };
     const _ns = netState;
     netState = function () {
       const o = _ns.apply(this, arguments);
-      if (o.scenes) { const sc = {}; for (const k in o.scenes) { const s = o.scenes[k]; if (s && s.vc) { const v = s.vc; sc[k] = Object.assign({}, s, { vc: { speaking: v.speaking || {}, sug: [], log: (v.log || []).slice(-20).map(r => ({ id: r.id, at: r.at, who: r.who, text: r.text, mode: r.mode, src: r.src, kind: r.kind, heard: (r.heard || []).slice(0, 0), local: r.local })) } }); } else sc[k] = s; } o.scenes = sc; }
+      if (o.scenes) { const sc = {}; for (const k in o.scenes) { const s = o.scenes[k]; if (s && s.vc) { const v = s.vc; sc[k] = Object.assign({}, s, { vc: { speaking: Object.keys(v.speaking || {}).filter(k => fresh(v.speaking[k])).reduce((a, k) => { a[k] = 1; return a; }, {}), sug: [], log: (v.log || []).slice(-20).map(r => ({ id: r.id, at: r.at, who: r.who, text: r.text, mode: r.mode, src: r.src, kind: r.kind, heard: (r.heard || []).slice(0, 0), local: r.local })) } }); } else sc[k] = s; } o.scenes = sc; }
       if (o.voiceCfg) o.voiceCfg = { on: o.voiceCfg.on, lang: o.voiceCfg.lang, stt: o.voiceCfg.stt };
       return o;
     };
   } catch (e) { console.error('voice wiring', e); }
+  let warned = false;
+  setInterval(() => { try { if (!warned && S && MP && MP.role === 'host' && MP.status === 'open') { warned = true; const c0 = aiCfg(); if (!(c0.endpoint && c0.key)) toast('AI is not configured in this browser. Players\' NPC chat and AI reactions will not work until you add the API key in AI CONTROLS -> API (settings are saved per browser).', 'warn'); } } catch (e) {} }, 2000);
   setInterval(watch, 250);
   // after a crash or reload, give back any NPC the host mic had taken over
   setTimeout(() => { try { if (S && S.voiceCfg && S.voiceCfg.autoCtl && S.voiceCfg.autoCtl.length && !MIC.armed && host()) unbindControl(); } catch (e) {} }, 3000);
